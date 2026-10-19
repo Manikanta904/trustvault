@@ -6,7 +6,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
+from app.routers.documents import router as documents_router
 from app.database import Base, engine, get_db
 from app.models import User
 from app.security import (
@@ -31,7 +31,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
+app.include_router(documents_router)
 class UserResponse(BaseModel):
     id: int
     name: str

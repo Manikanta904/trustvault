@@ -20,3 +20,6 @@ uploads/
 # Frontend generated files
 node_modules/
 dist/
+
+# TrustVault private uploaded files
+backend/private_storage/
