@@ -20,7 +20,7 @@ from app.security import (
 async def lifespan(app: FastAPI):
     # Local prototype only. We will use Alembic
     # migrations for the production database.
-    Base.metadata.create_all(bind=engine)
+
     yield
 
 

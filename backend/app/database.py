@@ -1,37 +1,25 @@
-
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///./trustvault.db",
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not configured")
 
-connect_args = (
-    {"check_same_thread": False}
-    if DATABASE_URL.startswith("sqlite")
-    else {}
-)
-
-engine = create_engine(
-    DATABASE_URL,
-    connect_args=connect_args,
-)
+engine = create_engine(DATABASE_URL)
 
 SessionLocal = sessionmaker(
-    bind=engine,
+    autocommit=False,
     autoflush=False,
-    expire_on_commit=False,
+    bind=engine,
 )
 
-
-class Base(DeclarativeBase):
-    pass
+Base = declarative_base()
 
 
 def get_db():
