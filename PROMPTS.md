@@ -58,4 +58,36 @@
 
 **Commit:** Add the real commit hash and repository URL after committing this milestone. Do not invent a commit reference.
 
-**Status:** Backend authorization and file-handling implementation passes 17 automated tests. Further audit coverage, live Swagger verification, threat-model documentation and deployment checks remain outstanding.
+**Status:** Document authorization, private file handling, permission grants and revocation, and API authorization tests were implemented. The automated test suite initially reported 17 passed. Subsequent manual Swagger testing confirmed the document upload, grant, download, revocation, and admin-without-permission workflows. Registration was implemented in a later milestone and is documented in Entry 3.
+
+## Entry 3 — 2026-10-19 — Secure user registration
+
+**AI tools used:** ChatGPT; VS Code and local terminal for implementation and verification.
+
+**Objective:** Add public user registration to the existing TrustVault FastAPI backend without weakening authentication or document authorization.
+
+**Prompt / request:** Extend the existing authentication implementation with `POST /auth/register`, validate names, email addresses and passwords, reject duplicate email addresses, hash passwords using the existing Argon2 password-hashing utility, and assign a fixed default role of `owner`. Prevent public registration from granting the `admin` role.
+
+**Implementation:** Added the `UserRegister` Pydantic schema in `backend/app/schemas.py` and the registration endpoint in `backend/app/main.py`. The endpoint normalizes email addresses, checks for existing accounts, hashes passwords before storage, handles duplicate-email database conflicts, and returns `UserResponse` without exposing password hashes. Added `email-validator` to the backend dependencies.
+
+**Verification performed:**
+- Ran `python -m pytest tests\test_registration.py -q` from the backend directory.
+- Result: **7 passed, 1 deprecation warning**.
+- Ran `python -m pytest -q` from the backend directory.
+- Result: **24 passed, 1 deprecation warning**.
+- Registration tests covered successful registration, duplicate email rejection, invalid email, blank name, short password, login after registration, password hashing, and attempted role escalation.
+- The registration implementation assigns `owner` explicitly and does not accept the requested role as an input field.
+- Manual Swagger testing of the registration endpoint was performed, as reported during development.
+
+**Specific warning observed:** Starlette emitted a deprecation warning concerning `httpx` with `starlette.testclient`. The warning did not cause test failures. Dependency compatibility remains a follow-up.
+
+**Security considerations and remaining work:**
+- Public registration must never allow a client to choose the `admin` role.
+- Newly registered users must still pass document-level authorization checks; registration does not grant access to other users' documents.
+- Automated tests currently use the configured development database. Isolated test-database setup remains a follow-up.
+- Audit coverage for failed login attempts and some upload-validation failures remains incomplete.
+- Production deployment, HTTPS, backup and recovery procedures, and deployment security checks remain outstanding.
+
+**Commit:** Add the actual commit hash and repository URL after committing this milestone. Do not invent a commit reference.
+
+**Status:** Registration implementation and automated tests completed. The complete test suite reported 24 passed. Local commit and repository synchronization must be verified separately.

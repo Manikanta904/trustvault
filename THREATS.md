@@ -132,6 +132,7 @@ The backend uses FastAPI, SQLAlchemy, and PostgreSQL. Authentication uses JWT ac
 
 ## 7. Verification Record
 
-- **2026-10-19:** Backend automated test suite reported 17 passed and 1 deprecation warning.
-- **2026-10-19:** `git diff --check` reported no errors.
-- **Pending:** Live Swagger tests, negative upload tests, audit verification, deployment checks, and final review of the security invariants.
+- **2026-10-19:** Registration test suite reported 7 passed and 1 deprecation warning.
+- **2026-10-19:** Full automated test suite reported 24 passed and 1 deprecation warning after registration implementation.
+- **2026-10-19:** Manual Swagger checks of registration and document-sharing behavior were reported as successful.
+- **Pending:** Isolated test database, complete audit coverage, negative upload tests, deployment security checks, HTTPS, backup and recovery verification.

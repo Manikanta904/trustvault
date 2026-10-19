@@ -14,6 +14,9 @@ from app.security import (
     get_current_user,
     verify_password,
 )
+from sqlalchemy.exc import IntegrityError
+from app.schemas import UserRegister
+from app.security import hash_password
 
 
 @asynccontextmanager
@@ -46,6 +49,48 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
+@app.post(
+    "/auth/register",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def register(
+    payload: UserRegister,
+    db: Session = Depends(get_db),
+):
+    email = str(payload.email).strip().lower()
+
+    existing_user = db.scalar(
+        select(User).where(User.email == email)
+    )
+
+    if existing_user is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists",
+        )
+
+    user = User(
+        name=payload.name.strip(),
+        email=email,
+        password_hash=hash_password(payload.password),
+        role="owner",
+        is_active=True,
+    )
+
+    db.add(user)
+
+    try:
+        db.commit()
+        db.refresh(user)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists",
+        )
+
+    return user
 
 @app.get("/health")
 def health():
