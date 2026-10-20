@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_audit
 from app.authorization import get_authorized_document
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models import Document, DocumentPermission, User
 from app.schemas import DocumentCreate, DocumentResponse, DocumentUpdate
 from app.security import get_current_user
@@ -20,6 +20,25 @@ from app.file_storage import get_storage_path, save_upload
 
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
+
+
+def record_upload_failure(user: User, details: str) -> None:
+    """Persist an upload failure independently of the upload transaction."""
+    try:
+        with SessionLocal() as audit_db:
+            record_audit(
+                db=audit_db,
+                actor=user,
+                action="document_upload",
+                outcome="failure",
+                details=details,
+            )
+            audit_db.commit()
+    except Exception:
+        # Do not expose internal database errors to the client.
+        # Production deployments should alert on audit-write failures.
+        # This fallback does not guarantee the event was recorded.
+        pass
 
 
 def get_document_or_audit_denial(
@@ -410,19 +429,25 @@ async def upload_document(
         db.refresh(document)
         return document
 
-    except Exception:
+    except Exception as exc:
         db.rollback()
 
-        # If the database operation fails after writing the file,
-        # remove the orphaned file.
+        # Remove any file saved before the database failure.
         if storage_key:
-            get_path = get_storage_path
             try:
-                get_path(storage_key).unlink(missing_ok=True)
+                get_storage_path(storage_key).unlink(missing_ok=True)
             except HTTPException:
                 pass
 
+        # Avoid logging raw exception messages or sensitive file details.
+        if isinstance(exc, HTTPException):
+            failure_details = f"Upload rejected: HTTP {exc.status_code}"
+        else:
+            failure_details = "Upload failed during storage or database processing"
+
+        record_upload_failure(user, failure_details)
         raise
+
 
 
 @router.get("/{document_id}/download")

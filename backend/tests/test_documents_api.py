@@ -308,3 +308,44 @@ def test_upload_download_grant_and_revoke(
 
     assert denied
 
+
+
+def test_failed_upload_is_recorded_in_audit_log(
+    test_accounts, tmp_path, monkeypatch
+):
+    import app.file_storage as file_storage
+
+    # Keep test files isolated from private development storage.
+    monkeypatch.setattr(file_storage, "STORAGE_DIR", tmp_path)
+
+    owner_id = test_accounts["owner_id"]
+    owner_token = test_accounts["owner_token"]
+
+    # Send an unsupported file type to trigger upload validation.
+    response = client.post(
+        "/documents/upload",
+        headers=auth(owner_token),
+        files={
+            "file": (
+                "malicious.exe",
+                b"not an allowed document",
+                "application/octet-stream",
+            )
+        },
+    )
+
+    assert response.status_code in (400, 415, 422), response.text
+
+    # The failed upload must have an independently committed audit entry.
+    with SessionLocal() as db:
+        failure_logs = list(
+            db.scalars(
+                select(AuditLog).where(
+                    AuditLog.actor_id == owner_id,
+                    AuditLog.action == "document_upload",
+                    AuditLog.outcome == "failure",
+                )
+            ).all()
+        )
+
+    assert failure_logs, "Failed upload was not recorded in the audit log"

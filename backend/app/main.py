@@ -17,7 +17,9 @@ from app.security import (
 from sqlalchemy.exc import IntegrityError
 from app.schemas import UserRegister
 from app.security import hash_password
+from app.audit import record_audit
 
+from app.routers.admin import router as admin_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -35,6 +37,7 @@ app = FastAPI(
 )
 
 app.include_router(documents_router)
+app.include_router(admin_router)
 class UserResponse(BaseModel):
     id: int
     name: str
@@ -116,6 +119,15 @@ def login(
             user.password_hash,
         )
     ):
+        record_audit(
+            db=db,
+            actor=user,
+            action="login",
+            outcome="denied",
+            details="Invalid credentials or inactive account",
+        )
+        db.commit()
+
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
