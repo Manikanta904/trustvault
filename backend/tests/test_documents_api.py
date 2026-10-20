@@ -1,5 +1,6 @@
 
 from uuid import uuid4
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -54,7 +55,6 @@ def test_accounts():
         "emails": emails,
     }
 
-    # Remove only data associated with these test accounts.
     with SessionLocal() as db:
         account_ids = [owner_id, viewer_id]
 
@@ -66,8 +66,6 @@ def test_accounts():
             ).all()
         )
 
-        # Remove audit records before deleting their related users
-        # or documents, preserving foreign-key integrity.
         conditions = [AuditLog.actor_id.in_(account_ids)]
         if owned_document_ids:
             conditions.append(
@@ -103,36 +101,46 @@ def auth(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def create_document(token, title, filename, category="Testing"):
+    """Create document metadata through the API."""
+    response = client.post(
+        "/documents",
+        headers=auth(token),
+        json={
+            "title": title,
+            "description": "Automated test document",
+            "category": category,
+            "original_filename": filename,
+            "content_type": "application/pdf",
+            "size_bytes": 100,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
 def test_document_endpoints_require_authentication():
     assert client.get("/documents").status_code == 401
-    assert client.post(
+
+    response = client.post(
         "/documents",
         json={
             "title": "Unauthenticated",
             "original_filename": "test.pdf",
             "size_bytes": 0,
         },
-    ).status_code == 401
+    )
+    assert response.status_code == 401
 
 
 def test_owner_can_create_and_read_document(test_accounts):
     token = test_accounts["owner_token"]
 
-    response = client.post(
-        "/documents",
-        headers=auth(token),
-        json={
-            "title": "Integration Test Document",
-            "description": "Test metadata",
-            "category": "Testing",
-            "original_filename": "example.pdf",
-            "content_type": "application/pdf",
-            "size_bytes": 100,
-        },
+    created = create_document(
+        token,
+        "Integration Test Document",
+        "example.pdf",
     )
-
-    assert response.status_code == 201, response.text
-    created = response.json()
     document_id = created["id"]
 
     assert created["owner_id"] == test_accounts["owner_id"]
@@ -147,33 +155,23 @@ def test_owner_can_create_and_read_document(test_accounts):
     assert response.json()["id"] == document_id
 
 
-def test_ungranted_user_cannot_read_edit_or_delete(
-    test_accounts,
-):
+def test_ungranted_user_cannot_read_edit_or_delete(test_accounts):
     owner_token = test_accounts["owner_token"]
     viewer_token = test_accounts["viewer_token"]
 
-    response = client.post(
-        "/documents",
-        headers=auth(owner_token),
-        json={
-            "title": "Private Integration Test",
-            "original_filename": "private.pdf",
-            "content_type": "application/pdf",
-            "size_bytes": 50,
-        },
+    document = create_document(
+        owner_token,
+        "Private Integration Test",
+        "private.pdf",
     )
-    assert response.status_code == 201, response.text
-    document_id = response.json()["id"]
+    document_id = document["id"]
 
-    # The viewer must not be able to read the metadata.
     response = client.get(
         f"/documents/{document_id}",
         headers=auth(viewer_token),
     )
     assert response.status_code == 404
 
-    # The viewer must not be able to modify the document.
     response = client.patch(
         f"/documents/{document_id}",
         headers=auth(viewer_token),
@@ -181,14 +179,12 @@ def test_ungranted_user_cannot_read_edit_or_delete(
     )
     assert response.status_code == 404
 
-    # Only the owner can delete the document.
     response = client.delete(
         f"/documents/{document_id}",
         headers=auth(viewer_token),
     )
     assert response.status_code == 404
 
-    # Denied requests must be recorded in PostgreSQL.
     with SessionLocal() as db:
         denied_logs = list(
             db.scalars(
@@ -202,7 +198,7 @@ def test_ungranted_user_cannot_read_edit_or_delete(
 
     assert len(denied_logs) >= 3
 
-    
+
 def test_viewer_cannot_create_document_metadata(test_accounts):
     response = client.post(
         "/documents",
@@ -223,14 +219,12 @@ def test_upload_download_grant_and_revoke(
 ):
     import app.file_storage as file_storage
 
-    # Isolate physical files from the development storage directory.
     monkeypatch.setattr(file_storage, "STORAGE_DIR", tmp_path)
 
     owner_token = test_accounts["owner_token"]
     viewer_token = test_accounts["viewer_token"]
     viewer_id = test_accounts["viewer_id"]
 
-    # A minimal PDF-signature test fixture.
     pdf_content = (
         b"%PDF-1.4\n"
         b"1 0 obj << /Type /Catalog >> endobj\n"
@@ -253,14 +247,12 @@ def test_upload_download_grant_and_revoke(
     assert "storage_key" not in document
     assert len(list(tmp_path.iterdir())) == 1
 
-    # A viewer without a grant cannot download.
     response = client.get(
         f"/documents/{document_id}/download",
         headers=auth(viewer_token),
     )
     assert response.status_code == 404
 
-    # The owner grants read access through the API.
     response = client.put(
         f"/documents/{document_id}/permissions/{viewer_id}",
         headers=auth(owner_token),
@@ -268,7 +260,6 @@ def test_upload_download_grant_and_revoke(
     )
     assert response.status_code == 200, response.text
 
-    # The granted viewer can download the file.
     response = client.get(
         f"/documents/{document_id}/download",
         headers=auth(viewer_token),
@@ -276,7 +267,6 @@ def test_upload_download_grant_and_revoke(
     assert response.status_code == 200
     assert response.content == pdf_content
 
-    # Revocation must block the viewer's next download.
     response = client.delete(
         f"/documents/{document_id}/permissions/{viewer_id}",
         headers=auth(owner_token),
@@ -288,11 +278,6 @@ def test_upload_download_grant_and_revoke(
         headers=auth(viewer_token),
     )
     assert response.status_code == 404
-
-    # Denied downloads should have generated audit entries.
-    from sqlalchemy import select
-    from app.database import SessionLocal
-    from app.models import AuditLog
 
     with SessionLocal() as db:
         denied = list(
@@ -309,22 +294,16 @@ def test_upload_download_grant_and_revoke(
     assert denied
 
 
-
 def test_failed_upload_is_recorded_in_audit_log(
     test_accounts, tmp_path, monkeypatch
 ):
     import app.file_storage as file_storage
 
-    # Keep test files isolated from private development storage.
     monkeypatch.setattr(file_storage, "STORAGE_DIR", tmp_path)
 
-    owner_id = test_accounts["owner_id"]
-    owner_token = test_accounts["owner_token"]
-
-    # Send an unsupported file type to trigger upload validation.
     response = client.post(
         "/documents/upload",
-        headers=auth(owner_token),
+        headers=auth(test_accounts["owner_token"]),
         files={
             "file": (
                 "malicious.exe",
@@ -336,12 +315,11 @@ def test_failed_upload_is_recorded_in_audit_log(
 
     assert response.status_code in (400, 415, 422), response.text
 
-    # The failed upload must have an independently committed audit entry.
     with SessionLocal() as db:
         failure_logs = list(
             db.scalars(
                 select(AuditLog).where(
-                    AuditLog.actor_id == owner_id,
+                    AuditLog.actor_id == test_accounts["owner_id"],
                     AuditLog.action == "document_upload",
                     AuditLog.outcome == "failure",
                 )
@@ -349,3 +327,134 @@ def test_failed_upload_is_recorded_in_audit_log(
         )
 
     assert failure_logs, "Failed upload was not recorded in the audit log"
+
+
+# ---------------------------------------------------------
+# Document search and filter tests
+# These require GET /documents to implement the query params.
+# ---------------------------------------------------------
+
+def test_document_search_filters_visible_documents(test_accounts):
+    token = test_accounts["owner_token"]
+    unique = uuid4().hex
+
+    finance = create_document(
+        token,
+        f"Quarterly Finance {unique}",
+        f"finance-{unique}.pdf",
+        category="Finance",
+    )
+    engineering = create_document(
+        token,
+        f"Engineering Notes {unique}",
+        f"engineering-{unique}.pdf",
+        category="Engineering",
+    )
+
+    response = client.get(
+        f"/documents?search={unique}",
+        headers=auth(token),
+    )
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()}
+    assert finance["id"] in ids
+    assert engineering["id"] in ids
+
+    response = client.get(
+        f"/documents?search=finance-{unique}",
+        headers=auth(token),
+    )
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()}
+    assert finance["id"] in ids
+    assert engineering["id"] not in ids
+
+    response = client.get(
+        "/documents",
+        params={"category": "Engineering"},
+        headers=auth(token),
+    )
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()}
+    assert engineering["id"] in ids
+    assert finance["id"] not in ids
+
+    response = client.get(
+        "/documents",
+        params={"owner_id": test_accounts["owner_id"]},
+        headers=auth(token),
+    )
+    assert response.status_code == 200, response.text
+    ids = {item["id"] for item in response.json()}
+    assert finance["id"] in ids
+    assert engineering["id"] in ids
+
+
+def test_document_search_does_not_expose_unshared_documents(
+    test_accounts,
+):
+    owner_document = create_document(
+        test_accounts["owner_token"],
+        f"Secret Project {uuid4().hex}",
+        "secret-project.pdf",
+        category="Confidential",
+    )
+
+    response = client.get(
+        "/documents",
+        params={"search": "Secret Project"},
+        headers=auth(test_accounts["viewer_token"]),
+    )
+    assert response.status_code == 200, response.text
+    assert owner_document["id"] not in {
+        item["id"] for item in response.json()
+    }
+
+    response = client.get(
+        "/documents",
+        params={"owner_id": test_accounts["owner_id"]},
+        headers=auth(test_accounts["viewer_token"]),
+    )
+    assert response.status_code == 200, response.text
+    assert owner_document["id"] not in {
+        item["id"] for item in response.json()
+    }
+
+
+def test_document_search_supports_date_filters(test_accounts):
+    token = test_accounts["owner_token"]
+    unique = uuid4().hex
+
+    document = create_document(
+        token,
+        f"Date Filter {unique}",
+        f"date-{unique}.pdf",
+    )
+
+    today = date.today().isoformat()
+
+    response = client.get(
+        "/documents",
+        params={"date_from": today, "date_to": today},
+        headers=auth(token),
+    )
+    assert response.status_code == 200, response.text
+    assert document["id"] in {
+        item["id"] for item in response.json()
+    }
+
+
+def test_document_search_rejects_invalid_date_range(test_accounts):
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    response = client.get(
+        "/documents",
+        params={
+            "date_from": today.isoformat(),
+            "date_to": yesterday.isoformat(),
+        },
+        headers=auth(test_accounts["owner_token"]),
+    )
+
+    assert response.status_code == 422, response.text

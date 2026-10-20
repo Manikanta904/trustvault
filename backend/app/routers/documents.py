@@ -1,22 +1,32 @@
-
+from datetime import date, datetime, time, timedelta, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
+from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
 from app.authorization import get_authorized_document
 from app.database import SessionLocal, get_db
-from app.models import Document, DocumentPermission, User
-from app.schemas import DocumentCreate, DocumentResponse, DocumentUpdate
-from app.security import get_current_user
-from app.security import get_current_user, require_roles
-from app.schemas import PermissionGrantRequest, PermissionResponse
-from fastapi import File, UploadFile
-from fastapi.responses import FileResponse
-
 from app.file_storage import get_storage_path, save_upload
+from app.models import Document, DocumentPermission, User
+from app.schemas import (
+    DocumentCreate,
+    DocumentResponse,
+    DocumentUpdate,
+    PermissionGrantRequest,
+    PermissionResponse,
+)
+from app.security import get_current_user, require_roles
 
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
@@ -104,9 +114,23 @@ def create_document(
 
 @router.get("", response_model=list[DocumentResponse])
 def list_documents(
+    search: str | None = Query(default=None, max_length=200),
+    owner_id: int | None = Query(default=None, gt=0),
+    category: str | None = Query(default=None, max_length=100),
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """List only documents visible to the caller, with optional filters."""
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="date_from must be on or before date_to",
+        )
+
+    # Apply the access-control scope before any user-supplied filters.
+    # Filters must never reveal documents the caller cannot already access.
     statement = (
         select(Document)
         .outerjoin(
@@ -119,10 +143,47 @@ def list_documents(
                 DocumentPermission.user_id == user.id,
             )
         )
-        .distinct()
-        .order_by(Document.created_at.desc())
     )
 
+    normalized_search = search.strip() if search else ""
+    if normalized_search:
+        search_pattern = f"%{normalized_search}%"
+        statement = statement.where(
+            or_(
+                Document.title.ilike(search_pattern),
+                Document.original_filename.ilike(search_pattern),
+            )
+        )
+
+    if owner_id is not None:
+        statement = statement.where(Document.owner_id == owner_id)
+
+    normalized_category = category.strip() if category else ""
+    if normalized_category:
+        statement = statement.where(
+            Document.category.ilike(normalized_category)
+        )
+
+    if date_from is not None:
+        start_datetime = datetime.combine(
+            date_from, time.min, tzinfo=timezone.utc
+        )
+        statement = statement.where(Document.created_at >= start_datetime)
+
+    if date_to is not None:
+        # Exclusive next-day boundary includes every time on date_to.
+        end_datetime = datetime.combine(
+            date_to + timedelta(days=1),
+            time.min,
+            tzinfo=timezone.utc,
+        )
+        statement = statement.where(Document.created_at < end_datetime)
+
+    statement = (
+        statement
+        .distinct()
+        .order_by(Document.created_at.desc(), Document.id.desc())
+    )
     return list(db.scalars(statement).all())
 
 
