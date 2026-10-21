@@ -145,9 +145,8 @@ class AuditLog(Base):
         nullable=True,
     )
     document_id = Column(
-        Integer,
-        ForeignKey("documents.id", ondelete="SET NULL"),
-        nullable=True,
+    Integer,
+    nullable=True,
     )
 
     action = Column(String(50), nullable=False)

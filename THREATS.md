@@ -1,138 +1,205 @@
 # TrustVault — Threat Model
 
-**Last updated:** 2026-10-19  
-**Status:** Initial threat model; implementation and deployment verification ongoing.
+**Last updated:** 2026-10-21
+**Status:** Backend milestone verified with full automated regression suite (80 passed, 3 warnings in 14.10s); production deployment controls remain documented as accepted operational risks.
+
+---
 
 ## 1. System Overview
 
-TrustVault is a secure document-sharing application with user authentication, role-based capabilities, per-document permissions, private file storage, and audit logging.
+TrustVault is a secure document-sharing platform featuring user authentication, role-based capabilities (`admin`, `owner`, `viewer`), granular per-document read/edit permissions, private file storage, and an append-only audit trail.
 
-The backend uses FastAPI, SQLAlchemy, and PostgreSQL. Authentication uses JWT access tokens, and passwords are hashed using Argon2.
+The backend stack comprises FastAPI, SQLAlchemy 2.0, PostgreSQL with `psycopg`, Alembic, Argon2id password hashing, and PyJWT authentication.
+
+This document records identified threats, concrete attacker scenarios, expected security invariants, implemented code mitigations, mapped automated test verifications, and residual risks. Passing automated test suites prove code-level correctness, but do not replace production infrastructure hardening.
+
+---
 
 ## 2. Assets to Protect
 
-- Uploaded documents and their contents.
-- User credentials and authentication tokens.
-- Document ownership and permission records.
-- Audit logs containing access and permission-change events.
-- Database integrity and document metadata.
-- Application configuration and secrets.
+- **Uploaded Document Files:** Confidential private files stored in backend storage.
+- **Document Metadata & Permissions:** Title, description, category, and access grant records.
+- **User Credentials & Tokens:** Argon2 password hashes, JWT secrets, and bearer tokens.
+- **Audit Logs:** Forensic evidence of document operations, permission changes, and access denials.
+- **Database Relational Integrity:** Schema constraints, append-only triggers, and foreign keys.
+- **Application Configuration:** Environment secrets in `.env` and database credentials.
+
+---
 
 ## 3. Trust Boundaries
 
-- **Client to API:** All requests are untrusted until authenticated and authorized.
-- **API to database:** Database access must use configured credentials with appropriate privileges.
-- **API to file storage:** Files must only be accessed through backend code that checks authorization.
-- **User to user:** One user's identity or document permissions must never grant access to another user's documents automatically.
-- **Administrator to document content:** Administrative access to audit information must not automatically grant access to every document's contents.
+- **Client to API:** All external requests are untrusted until authenticated and authorized.
+- **API to Database:** Restricted to application credentials (`trustvault_app`) with minimal necessary privileges.
+- **API to File Storage:** Files must only be accessed through server-validated storage paths and authorized routines.
+- **User to User:** Cross-user document isolation must be complete unless an explicit grant exists.
+- **Administrator to Document Content:** Administrative access to audit logs does not grant access to private document contents.
+- **Application to Audit Logs:** The application cannot modify, delete, or truncate audit records due to database-level triggers.
+- **Database Administrator Boundary Disclaimer:** Database triggers and role grants protect against application-level compromise, but a PostgreSQL superuser or sufficiently privileged database administrator can alter, bypass, or disable these controls. Absolute tamper-proofing is not claimed.
 
-## 4. Threats, Mitigations and Verification
+---
 
-### T1 — Unauthorized document access
+## 4. Threats, Mitigations, and Verification Matrix
 
-**Threat:** An authenticated user changes a document ID in a request to read or download another user's document.
+### T01: Cross-User Document ID Substitution & Unauthorized Metadata Access
+- **Asset & Trust Boundary:** Document metadata; User-to-User boundary.
+- **Attacker Capability & Attack Scenario:** An authenticated viewer or unrelated owner inspects network traffic, guesses or enumerates document IDs (e.g. `GET /documents/42`), attempting to view another user's private document metadata.
+- **Expected Security Invariant:** An authenticated user can only view document metadata if they are the document owner or hold an active permission grant (`read` or `edit`). Inaccessible documents must return HTTP 404 to prevent enumeration.
+- **Mitigation Implemented in Actual Code:** `app/authorization.py` (`get_authorized_document`) checks live database ownership and permissions. If unauthorized, raises HTTP 404. `app/routers/documents.py` (`read_document`) invokes `get_document_or_audit_denial()` which records `action="document_read", outcome="denied"`.
+- **Relevant Automated Test Name(s) & Assertions:** `test_ungranted_user_cannot_read_edit_or_delete` (asserts `client.get("/documents/{id}")` returns 404), `test_admin_without_grant_cannot_access_document_api` (asserts admin without grant gets 404), `test_cross_document_access_isolation`.
+- **Actual Verification Performed & Result:** Tests executed against PostgreSQL test DB; verified 404 status and denied audit entry created.
+- **Residual Risk & Accepted Limitation:** None at application layer. Network eavesdropping mitigated by TLS in production.
+- **Status:** **Closed**
 
-**Mitigations:** Enforce document-level authorization on every protected endpoint. Do not rely only on authentication or user roles.
+### T02: Direct File Download & Authorization Bypass
+- **Asset & Trust Boundary:** Confidential document file content; API-to-File-Storage boundary.
+- **Attacker Capability & Attack Scenario:** An attacker attempts to call `GET /documents/{id}/download` directly for a document they do not own and have no grant for, hoping file serving bypasses metadata authorization.
+- **Expected Security Invariant:** File content delivery requires explicit server-side `read` authorization. No direct filesystem access or unauthenticated static routes exist.
+- **Mitigation Implemented in Actual Code:** `app/routers/documents.py` (`download_document`) calls `get_document_or_audit_denial(db, user, document_id, "read")` before resolving the file path. Files are served via `FileResponse` with `attachment` disposition and `X-Content-Type-Options: nosniff`.
+- **Relevant Automated Test Name(s) & Assertions:** `test_ungranted_user_cannot_read_edit_or_delete` (asserts download returns 404), `test_admin_without_grant_cannot_access_document_api` (asserts admin download returns 404).
+- **Actual Verification Performed & Result:** Verified download requests without grants return HTTP 404 and create denied audit records.
+- **Residual Risk & Accepted Limitation:** Once a file is downloaded by an authorized user, server controls cannot prevent that user from sharing their local copy.
+- **Status:** **Closed**
 
-**Verification:** Automated tests cover access without a grant, admin access without a grant, and document authorization.
+### T03: Read-versus-Edit Privilege Escalation
+- **Asset & Trust Boundary:** Document metadata modification; User-to-User permission boundary.
+- **Attacker Capability & Attack Scenario:** A user granted `read`-only access attempts to send a `PATCH /documents/{id}` request with altered title/metadata, or an ungranted user attempts to update metadata.
+- **Expected Security Invariant:** Only document owners and users with explicit `edit` permissions can update document metadata. A `read` grant strictly denies edit operations.
+- **Mitigation Implemented in Actual Code:** `app/authorization.py` checks `permission.permission_type == "edit"`. `app/routers/documents.py` (`update_document`) enforces `required_permission="edit"` and rejects empty updates with HTTP 422.
+- **Relevant Automated Test Name(s) & Assertions:** `test_read_grant_denies_edit_but_edit_grant_allows_it` (asserts reader `PATCH` returns 404, while editor `PATCH` returns 200), `test_editor_cannot_grant_or_revoke_permissions`.
+- **Actual Verification Performed & Result:** Verified read-only grant returns 404 on `PATCH` and records `action="document_edit", outcome="denied"`.
+- **Residual Risk & Accepted Limitation:** None.
+- **Status:** **Closed**
 
-**Status:** Initial tests pass; additional live Swagger checks remain required.
+### T04: Unauthorized Deletion & Permission Management Tampering
+- **Asset & Trust Boundary:** Document lifecycle and access control table; Owner privilege boundary.
+- **Attacker Capability & Attack Scenario:** A viewer, an editor with `edit` permissions, or a platform administrator attempts to delete a document (`DELETE /documents/{id}`) or grant permissions to a third party (`PUT /documents/{id}/permissions/{user_id}`).
+- **Expected Security Invariant:** Only the true document owner (`owner_id == user.id`) can delete the document or grant/revoke permissions. Editors and administrators without ownership cannot manage access or delete files.
+- **Mitigation Implemented in Actual Code:** In `app/routers/documents.py`: `delete_document`, `grant_document_permission`, and `revoke_document_permission` strictly check `document.owner_id == user.id`. If false, audits denial and returns HTTP 404. Non-owners cannot create metadata (`POST /documents` audits denial and returns HTTP 403).
+- **Relevant Automated Test Name(s) & Assertions:** `test_editor_cannot_grant_or_revoke_permissions` (asserts editor `PUT /permissions` returns 404 and original grant remains unchanged), `test_viewer_cannot_create_document_metadata` (returns 403), `test_viewer_metadata_creation_denial_is_audited`.
+- **Actual Verification Performed & Result:** Verified non-owners cannot delete or grant permissions; denied attempts are audited.
+- **Residual Risk & Accepted Limitation:** None.
+- **Status:** **Closed**
 
-### T2 — Permission escalation
+### T05: Access After Permission Revocation & Stale Authorization Cache
+- **Asset & Trust Boundary:** Document access post-revocation; Temporal authorization boundary.
+- **Attacker Capability & Attack Scenario:** An owner revokes a user's access (`DELETE /documents/{id}/permissions/{user_id}`). The revoked user attempts immediate subsequent requests using their existing JWT, hoping permissions are cached in-memory or in the token.
+- **Expected Security Invariant:** Permission revocation takes effect immediately. Every subsequent request must query the current permission state and return HTTP 404.
+- **Mitigation Implemented in Actual Code:** Permissions are never embedded in JWTs or memory caches. `app/authorization.py` queries `DocumentPermission` in PostgreSQL on every request. Revocation deletes the row in an atomic transaction.
+- **Relevant Automated Test Name(s) & Assertions:** `test_upload_download_grant_and_revoke` (verifies immediate 404 on metadata, download, search, edit, and delete after revocation), `test_revoked_permission_blocks_next_access`.
+- **Actual Verification Performed & Result:** Verified that within the same test run, revocation immediately denies all 5 access paths with HTTP 404.
+- **Residual Risk & Accepted Limitation:** Revocation controls future server access; it cannot erase files already saved to the recipient's personal computer.
+- **Status:** **Closed**
 
-**Threat:** A viewer edits a document, grants permissions, deletes another user's document, or uploads documents without the required role.
+### T06: Search/Listing Leakage & Document Existence Enumeration
+- **Asset & Trust Boundary:** Document visibility and discovery; Information disclosure boundary.
+- **Attacker Capability & Attack Scenario:** A user queries `GET /documents?owner_id=1` or `GET /documents?search=confidential` attempting to list or infer documents they are not authorized to view.
+- **Expected Security Invariant:** Document listing and search must apply ownership and permission scoping before any user-supplied filters. Searching must never disclose the existence of unshared documents. Inaccessible documents must return 404, not 403.
+- **Mitigation Implemented in Actual Code:** In `app/routers/documents.py` (`list_documents`), the base query enforces `where(or_(Document.owner_id == user.id, DocumentPermission.user_id == user.id))`. Search terms, owner IDs, categories, and date filters are appended as child conditions. Bounded pagination (`limit`: 1–100, `offset` >= 0) prevents table-dump attacks.
+- **Relevant Automated Test Name(s) & Assertions:** `test_document_search_does_not_expose_unshared_documents`, `test_document_listing_shows_shared_documents_only`, `test_document_listing_pagination`.
+- **Actual Verification Performed & Result:** Verified unshared documents never appear in list or search results, even when explicitly filtering by the target owner's ID.
+- **Residual Risk & Accepted Limitation:** None.
+- **Status:** **Closed**
 
-**Mitigations:** Enforce role and ownership checks on the server. Only document owners can grant or revoke access and delete their documents.
+### T07: Malicious, Oversized, Malformed, or Misleading File Uploads
+- **Asset & Trust Boundary:** Backend storage and filesystem; Host availability boundary.
+- **Attacker Capability & Attack Scenario:** An attacker uploads a 500 MB file to exhaust disk space, an `.exe` disguised as a `.pdf`, malformed UTF-8 text containing null bytes, or an empty 0-byte file.
+- **Expected Security Invariant:** Uploads must be strictly bounded in size (10 MB), verified for allowed extensions and MIME types, inspected for binary magic numbers (PDF, PNG, JPEG), validated incrementally for valid UTF-8 without null bytes (TXT), and cleaned up immediately from disk upon failure.
+- **Mitigation Implemented in Actual Code:** `app/file_storage.py` (`save_upload`) streams in 64 KB chunks, enforcing `size > 10MB` cutoff, validates headers (`%PDF-`, `\x89PNG\r\n\x1a\n`, `\xff\xd8\xff`), uses incremental UTF-8 decoding, rejects null bytes, and unlinks partial files in `except Exception:`.
+- **Relevant Automated Test Name(s) & Assertions:** `test_valid_utf8_text_upload_succeeds`, `test_invalid_utf8_after_first_32_bytes_is_rejected`, `test_null_byte_after_first_32_bytes_is_rejected`, `test_empty_text_upload_is_rejected`, `test_invalid_pdf_signature_is_rejected`, `test_unsupported_extension_is_rejected`, `test_upload_exceeding_size_limit_is_rejected`, `test_upload_commit_failure_cleans_up_file_and_database`.
+- **Actual Verification Performed & Result:** All 7 storage test cases passed; verified destination directory is empty after rejected uploads.
+- **Residual Risk & Accepted Limitation:** Signature checks verify basic headers, not deep semantic PDF parsing or active malware scanning. Production deployment should add ClamAV or equivalent virus scanning.
+- **Status:** **Closed (for application layer controls)**
 
-**Verification:** Tests cover viewer restrictions and owner-only deletion/permission behavior where implemented.
+### T08: File Path Traversal & Storage-Key Manipulation
+- **Asset & Trust Boundary:** Host filesystem; Storage abstraction boundary.
+- **Attacker Capability & Attack Scenario:** An attacker uploads a file named `../../../../windows/system32/cmd.exe` or manipulates a download request storage key to read files outside private storage.
+- **Expected Security Invariant:** Files must be stored exclusively under server-generated random identifiers. Client filenames must never be used as filesystem paths. Storage keys must be strictly validated.
+- **Mitigation Implemented in Actual Code:** `app/file_storage.py`: storage keys are generated via `uuid4().hex` (32 hex characters). Filenames are sanitized via `.rsplit("/", 1)[-1]` and stored only as database metadata. `get_storage_path()` strictly validates `len(key) == 32` and `all(c in "0123456789abcdef" for c in key)`.
+- **Relevant Automated Test Name(s) & Assertions:** `test_valid_utf8_text_upload_succeeds`, `test_cross_document_access_isolation`.
+- **Actual Verification Performed & Result:** Verified stored file names on disk are 32-hex UUIDs and files reside strictly inside `STORAGE_DIR`.
+- **Residual Risk & Accepted Limitation:** OS-level directory permissions must be secured during deployment.
+- **Status:** **Closed**
 
-**Status:** Continue testing all protected endpoints.
+### T09: Credential Theft, Inactive Accounts, Token Misuse, & Brute-Force
+- **Asset & Trust Boundary:** User accounts and authentication tokens; Authentication boundary.
+- **Attacker Capability & Attack Scenario:** An attacker uses stolen password hashes, submits expired or forged JWTs, logs in to deactivated employee accounts, or attempts credential stuffing.
+- **Expected Security Invariant:** Passwords must be hashed using state-of-the-art Argon2id. Tokens must have validated expiration and signature. Deactivated users must be blocked immediately from login and active token usage.
+- **Mitigation Implemented in Actual Code:** `app/security.py`: Argon2id password hashing via `pwdlib`. JWT signed with `HS256`, verified with required `sub` and `exp`. `get_current_user` queries database to ensure `user.is_active is True`. Failed logins record `outcome="denied"` in audit logs.
+- **Relevant Automated Test Name(s) & Assertions:** `test_login_and_get_current_user`, `test_invalid_password_is_rejected`, `test_deactivated_user_cannot_use_existing_token`, `test_expired_jwt_is_rejected`, `test_seed_demo_accounts_is_safe_and_idempotent`.
+- **Actual Verification Performed & Result:** Verified 401 on bad password, expired token, and deactivated user; verified failed login is recorded in audit log.
+- **Residual Risk & Accepted Limitation:** Rate-limiting / brute-force throttling on `/auth/login` is not implemented in FastAPI and must be configured at the reverse proxy (Nginx / Cloudflare) in production.
+- **Status:** **Partially Mitigated (Application controls complete; rate-limiting pending deployment)**
 
-### T3 — Access after permission revocation
+### T10: Audit Omission, Failure-Path Loss, & Transaction Inconsistency
+- **Asset & Trust Boundary:** Audit log completeness and reliability; Transaction boundary.
+- **Attacker Capability & Attack Scenario:** An operation succeeds but the audit log fails to write (omission), or an operation fails and rolls back its audit log, concealing the attack attempt.
+- **Expected Security Invariant:** Mutating security operations must be atomic with their audit record. If an audit record cannot be written, the business operation must roll back. Upload validation failures must be persisted independently.
+- **Mitigation Implemented in Actual Code:** In `app/routers/documents.py`: `update_document`, `grant_document_permission`, `revoke_document_permission`, and `delete_document` write the audit log in the same database transaction before `db.commit()`. If audit write raises an exception, the transaction aborts. `record_upload_failure()` uses a separate session to record rejected uploads.
+- **Relevant Automated Test Name(s) & Assertions:** `test_document_update_is_not_saved_when_audit_write_fails`, `test_document_delete_is_not_saved_when_audit_fails`, `test_document_download_fails_when_audit_write_fails`, `test_permission_grant_is_not_saved_when_audit_fails`, `test_permission_revoke_is_not_saved_when_audit_fails`, `test_failed_upload_is_recorded_in_audit_log`.
+- **Actual Verification Performed & Result:** All 6 transaction-failure tests pass, proving operations roll back when audit logging fails.
+- **Residual Risk & Accepted Limitation:** If PostgreSQL crashes mid-transaction before WAL flush, both operation and audit log roll back consistently.
+- **Status:** **Closed**
 
-**Threat:** A user continues to access a document after their grant has been revoked.
+### T11: Audit Log Tampering, Triggers, & Privileged DBA Compromise
+- **Asset & Trust Boundary:** Audit log immutability; Database storage boundary.
+- **Attacker Capability & Attack Scenario:** An attacker obtains application SQL injection or compromised application database credentials (`trustvault_app`) and attempts `UPDATE audit_logs SET details = ...` or `TRUNCATE audit_logs` to cover their tracks.
+- **Expected Security Invariant:** Audit logs must be append-only. The application role cannot update, delete, or truncate audit rows under any circumstances.
+- **Mitigation Implemented in Actual Code:** Migration `c4e1a8b29f70` created PostgreSQL triggers (`audit_logs_no_update_delete` and `audit_logs_no_truncate`) calling `prevent_audit_log_mutation()` which unconditionally raises an exception on `UPDATE`, `DELETE`, or `TRUNCATE`.
+- **Relevant Automated Test Name(s) & Assertions:** `tests/test_audit_integrity.py`: `test_audit_log_rejects_update`, `test_audit_log_rejects_delete`, `test_audit_log_rejects_truncate`.
+- **Actual Verification Performed & Result:** All 3 integrity tests pass, confirming PostgreSQL raises DBAPIError exceptions on update, delete, or truncate attempts.
+- **Residual Risk & Accepted Limitation:** **Crucial Security Boundary Disclosure:** A PostgreSQL superuser or sufficiently privileged database administrator can disable triggers (`ALTER TABLE ... DISABLE TRIGGER`) or drop the table. Application database controls protect against application-level attackers, but cannot defend against a compromised database superuser.
+- **Status:** **Partially Mitigated (Application-level tamper-proofing verified; superuser boundary documented)**
 
-**Mitigations:** Check current permission records on every request. Avoid relying on long-lived cached authorization decisions or publicly accessible file URLs.
+### T12: Document Deletion Foreign-Key Cascading vs. Historical Audit Retention
+- **Asset & Trust Boundary:** Long-term audit integrity; Relational schema boundary.
+- **Attacker Capability & Attack Scenario:** An owner deletes a document (`DELETE /documents/{id}`). If the audit log foreign key has `ON DELETE CASCADE` or `ON DELETE SET NULL`, the historical record of who accessed or uploaded the document is wiped or loses its document ID.
+- **Expected Security Invariant:** Deleting a document from active storage must preserve all historical audit logs, including the original numeric `document_id`.
+- **Mitigation Implemented in Actual Code:** Migration `d7a2c9e4b105` explicitly dropped the foreign key constraint `audit_logs_document_id_fkey`. `AuditLog.document_id` is an unconstrained integer column. When `Document` is deleted, `audit_logs` rows remain untouched and triggers do not fire.
+- **Relevant Automated Test Name(s) & Assertions:** `test_delete_document_keeps_audit_record` in `tests/test_documents_api.py` (deletes document, verifies document row is gone, verifies audit record remains with original `document_id`).
+- **Actual Verification Performed & Result:** Verified that after document deletion, the `document_upload` and `document_delete` audit entries retain the original document ID.
+- **Residual Risk & Accepted Limitation:** None.
+- **Status:** **Closed**
 
-**Verification:** An automated test confirms that revocation blocks the next access attempt.
+### T13: Secret Leakage, Configuration Exposure, & Repository Hygiene
+- **Asset & Trust Boundary:** Secrets, database dumps, and credentials; Source code repository boundary.
+- **Attacker Capability & Attack Scenario:** Secrets (`JWT_SECRET`, database passwords) or database dumps containing real user data are committed to git and pushed to a public repository.
+- **Expected Security Invariant:** No `.env` files, database dumps (`.dump`, `.sql`), local SQLite databases, or private uploaded files can be committed. Demo seeding scripts must not store hardcoded credentials or overwrite existing user accounts.
+- **Mitigation Implemented in Actual Code:** Root `.gitignore` excludes `.env`, `**/.env`, `*.db`, `*.sqlite3`, `*.dump`, `*.sql`, `*.tar`, and `backend/private_storage/`. `seed_demo.py` refactored to be idempotent and safe, removing `create_all()`.
+- **Relevant Automated Test Name(s) & Assertions:** `git ls-files` check, `git status` check, `test_seed_demo_accounts_is_safe_and_idempotent` in `tests/test_documents_api.py`.
+- **Actual Verification Performed & Result:** Verified `.env` and `trustvault_before_migration.dump` are not tracked; seed script preserves accounts on rerun.
+- **Residual Risk & Accepted Limitation:** Developers must exercise discipline never to use `git add -f` on ignored files.
+- **Status:** **Closed**
 
-**Status:** Automated test passes; verify again through Swagger.
+---
 
-### T4 — Malicious or oversized file uploads
+## 5. Security Invariants Summary
 
-**Threat:** An attacker uploads unsupported files, misleading file types, empty files, or files that consume excessive storage.
+1. **Mandatory Authentication:** All protected endpoints reject unauthenticated requests with HTTP 401.
+2. **Explicit Authorization:** Ownership or an explicit per-document grant is mandatory for reading, downloading, or editing.
+3. **Privilege Separation:** `read` permission allows viewing and downloading; `edit` allows metadata modification; neither allows deletion or permission management.
+4. **Owner-Only Lifecycle:** Only the document owner can delete the document or grant/revoke permissions.
+5. **Immediate Revocation:** Revoking permission blocks subsequent requests immediately on the live database.
+6. **Admin Isolation:** Administrators cannot read or download document contents without an explicit document grant.
+7. **Storage Isolation:** Private files are stored under random 32-hex keys and never served through static directories.
+8. **Append-Only Auditing:** Audit rows cannot be updated, deleted, or truncated by the application role.
+9. **Atomic Consistency:** Security operations and audit records share database transactions; audit write failure rolls back the operation.
+10. **Enumeration Resistance:** Unauthorized and missing document requests uniformly return HTTP 404.
 
-**Mitigations:** Apply an upload size limit, allowlist extensions and content types, validate basic file signatures, generate random storage keys, and clean up partial files on failure.
-
-**Verification:** Basic validation exists in the file-storage implementation. Add or verify negative tests for unsupported types, invalid signatures, and files exceeding the size limit.
-
-**Residual risk:** Basic signature checks do not guarantee that a file is safe. More comprehensive content inspection may be required.
-
-### T5 — File path traversal
-
-**Threat:** A malicious filename or storage key is used to access files outside the intended storage directory.
-
-**Mitigations:** Generate storage keys on the server and validate their format before resolving stored files. Do not use user-supplied filenames as filesystem paths.
-
-**Verification:** Storage keys are generated by the server and checked before file access. Add explicit negative tests for malformed keys.
-
-### T6 — Credential theft or token misuse
-
-**Threat:** Passwords, JWT secrets, database credentials, or access tokens are exposed.
-
-**Mitigations:** Hash passwords using Argon2, keep secrets in environment configuration, exclude `.env` files from version control, and avoid logging passwords or bearer tokens.
-
-**Verification:** Inspect staged Git changes before every commit. Rotate any secret that has been exposed.
-
-### T7 — Incomplete or tampered audit trail
-
-**Threat:** Unauthorized access, permission changes, downloads, or deletion attempts are not recorded consistently.
-
-**Mitigations:** Record relevant successful and denied operations, including actor, action, outcome, and document reference where available. Ensure audit entries are committed reliably.
-
-**Verification:** The audit helper creates entries in the active database session. Review each endpoint's transaction behavior and add tests for denied attempts and permission changes.
-
-**Known gap:** Failed logins and some upload-validation failures are not yet consistently audited. The audit log is not yet demonstrated to be tamper-resistant against privileged database access.
-
-### T8 — Database compromise or data loss
-
-**Threat:** Excessive database privileges, accidental data deletion, or exposed credentials compromise metadata and permission records.
-
-**Mitigations:** Use a dedicated application database user, keep credentials out of source control, use migrations, and plan backups and recovery.
-
-**Verification:** PostgreSQL and Alembic migrations are configured locally. Production backup and recovery procedures remain to be established.
-
-### T9 — Information leakage through API responses
-
-**Threat:** API responses expose sensitive filesystem paths, secrets, or document contents to unauthorized users.
-
-**Mitigations:** Return only intended metadata, serve files through authorized endpoints, use attachment downloads and `X-Content-Type-Options: nosniff`, and avoid public static mounts for private storage.
-
-**Verification:** The download route uses an authenticated authorization check and a file response. Confirm that private storage is never exposed through a static route in deployment.
-
-## 5. Security Invariants
-
-- Authentication is required for protected endpoints.
-- Ownership or an explicit grant is required for document access.
-- Read permission does not imply edit permission.
-- Edit permission permits reading and editing but does not automatically permit deletion or permission management.
-- Only the owner can grant or revoke access.
-- Revocation blocks subsequent authorized requests.
-- Administrators do not automatically receive document-content access.
-- Private files are not exposed through public URLs.
-- Security claims must be backed by automated tests or documented manual verification.
+---
 
 ## 6. Accepted and Outstanding Risks
 
-- Basic file-signature validation is not full malware scanning.
-- Audit logs are stored in the application database and are not independently tamper-proof.
-- Failed-login and upload-validation audit coverage needs improvement.
-- Test database isolation needs improvement before broader use.
-- Production deployment, HTTPS, secret configuration, backup and recovery, and live API security checks remain to be verified.
+- **Heuristic Malware Scanning:** The backend validates file signatures, UTF-8 validity, and file size limits. Comprehensive antivirus scanning (e.g. ClamAV daemon) must be deployed at the container/infrastructure layer.
+- **Database Superuser Privilege:** Database triggers prevent mutation by `trustvault_app`, but cannot stop a PostgreSQL superuser. WORM (Write-Once-Read-Many) storage is recommended for enterprise compliance.
+- **Local Client Copies:** Revocation halts server access immediately, but cannot reach files already downloaded to client devices.
+- **Network Rate Limiting:** Brute-force protection on `/auth/login` should be enforced by an API gateway or reverse proxy (Nginx, Cloudflare) prior to public hosting.
+- **Starlette TestClient Warnings:** Three Starlette library deprecation warnings occur during test execution; these are third-party framework notices and do not affect runtime application security.
+
+---
 
 ## 7. Verification Record
 
-- **2026-10-19:** Registration test suite reported 7 passed and 1 deprecation warning.
-- **2026-10-19:** Full automated test suite reported 24 passed and 1 deprecation warning after registration implementation.
-- **2026-10-19:** Manual Swagger checks of registration and document-sharing behavior were reported as successful.
-- **Pending:** Isolated test database, complete audit coverage, negative upload tests, deployment security checks, HTTPS, backup and recovery verification.
+- **2026-10-19:** Registration test suite passed (7 passed). Full test suite passed (24 passed).
+- **2026-10-20:** Admin audit endpoint verified through Swagger and automated tests. File storage tests passed (7 passed). Document API tests passed (11 passed). Full suite passed (44 passed).
+- **2026-10-21:** Hardening milestone: verified document listing pagination, admin audit log filtering by document ID, denial audit logging for non-owners and non-admins, transaction abort on delete/download audit failure, safe demo seeding without schema mutation, append-only trigger protections, and git repository hygiene.
+- **Final Regression Suite Run (2026-10-21):** **80 passed, 3 warnings in 14.10 seconds** (`.venv\Scripts\pytest -v`).

@@ -3,12 +3,12 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
 
 from app.database import SessionLocal
 from app.main import app
 from app.models import AuditLog, User
 from app.security import create_access_token, hash_password
+from sqlalchemy import select
 
 client = TestClient(app)
 
@@ -64,20 +64,6 @@ def admin_test_accounts():
         }
 
     yield result
-
-    # Remove only audit records and users created for this fixture.
-    user_ids = [
-        result["admin"]["id"],
-        result["owner"]["id"],
-        result["viewer"]["id"],
-    ]
-
-    with SessionLocal() as db:
-        db.execute(
-            delete(AuditLog).where(AuditLog.actor_id.in_(user_ids))
-        )
-        db.execute(delete(User).where(User.id.in_(user_ids)))
-        db.commit()
 
 
 def auth(token):
@@ -231,3 +217,166 @@ def test_admin_audit_log_pagination(admin_test_accounts):
     assert first_ids.isdisjoint(second_ids)
     assert first_body["limit"] == 2
     assert second_body["offset"] == 2
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_status"),
+    [
+        ({"outcome": "unknown"}, 422),
+        ({"limit": 0}, 422),
+        ({"limit": 101}, 422),
+        ({"offset": -1}, 422),
+        (
+            {
+                "start_date": "2026-10-20T00:00:00",
+                "end_date": "2026-10-19T00:00:00",
+            },
+            422,
+        ),
+    ],
+)
+def test_admin_audit_log_rejects_invalid_filters(
+    admin_test_accounts, params, expected_status
+):
+    response = client.get(
+        "/admin/audit-logs",
+        params=params,
+        headers=auth(admin_test_accounts["admin"]["token"]),
+    )
+
+    assert response.status_code == expected_status
+
+
+def test_admin_can_filter_audit_logs_by_actor(admin_test_accounts):
+    admin_id = admin_test_accounts["admin"]["id"]
+    token = admin_test_accounts["admin"]["token"]
+    action = f"actor_filter_{uuid4().hex}"
+
+    with SessionLocal() as db:
+        db.add(
+            AuditLog(
+                actor_id=admin_id,
+                action=action,
+                outcome="success",
+                details="Actor filter test",
+            )
+        )
+        db.commit()
+
+    response = client.get(
+        "/admin/audit-logs",
+        params={"actor_id": admin_id, "action": action},
+        headers=auth(token),
+    )
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert items
+    assert all(item["actor_id"] == admin_id for item in items)
+    assert all(item["action"] == action for item in items)
+
+
+def test_admin_can_filter_audit_logs_by_date_range(admin_test_accounts):
+    admin_id = admin_test_accounts["admin"]["id"]
+    token = admin_test_accounts["admin"]["token"]
+    action = f"date_filter_{uuid4().hex}"
+
+    with SessionLocal() as db:
+        db.add(
+            AuditLog(
+                actor_id=admin_id,
+                action=action,
+                outcome="success",
+                details="Date filter test",
+            )
+        )
+        db.commit()
+
+    response = client.get(
+        "/admin/audit-logs",
+        params={
+            "action": action,
+            "start_date": "2026-01-01T00:00:00",
+            "end_date": "2027-01-01T00:00:00",
+        },
+        headers=auth(token),
+    )
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert items
+    assert all(item["action"] == action for item in items)
+
+
+def test_admin_can_filter_audit_logs_by_document_id(admin_test_accounts):
+    admin_id = admin_test_accounts["admin"]["id"]
+    token = admin_test_accounts["admin"]["token"]
+    action = f"doc_filter_{uuid4().hex}"
+    target_doc_id = 88888
+
+    with SessionLocal() as db:
+        db.add_all([
+            AuditLog(
+                actor_id=admin_id,
+                action=action,
+                outcome="success",
+                document_id=target_doc_id,
+                details="Document filter target",
+            ),
+            AuditLog(
+                actor_id=admin_id,
+                action=action,
+                outcome="success",
+                document_id=99999,
+                details="Other document",
+            ),
+        ])
+        db.commit()
+
+    response = client.get(
+        "/admin/audit-logs",
+        params={"action": action, "document_id": target_doc_id},
+        headers=auth(token),
+    )
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["document_id"] == target_doc_id
+    assert items[0]["details"] == "Document filter target"
+
+
+def test_admin_audit_log_rejects_invalid_document_id(admin_test_accounts):
+    token = admin_test_accounts["admin"]["token"]
+
+    response = client.get(
+        "/admin/audit-logs",
+        params={"document_id": 0},
+        headers=auth(token),
+    )
+    assert response.status_code == 422
+
+
+def test_non_admin_audit_log_denial_is_audited(admin_test_accounts):
+    viewer_id = admin_test_accounts["viewer"]["id"]
+    viewer_token = admin_test_accounts["viewer"]["token"]
+
+    response = client.get(
+        "/admin/audit-logs",
+        headers=auth(viewer_token),
+    )
+    assert response.status_code == 403
+
+    with SessionLocal() as db:
+        denied_entry = db.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.actor_id == viewer_id,
+                AuditLog.action == "admin_audit_logs_read",
+                AuditLog.outcome == "denied",
+            )
+            .order_by(AuditLog.id.desc())
+        )
+
+    assert denied_entry is not None
+    assert "Non-admin attempted to access audit logs" in denied_entry.details

@@ -1,4 +1,5 @@
 from datetime import date, datetime, time, timedelta, timezone
+import logging
 from uuid import uuid4
 
 from fastapi import (
@@ -30,6 +31,7 @@ from app.security import get_current_user, require_roles
 
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
+logger = logging.getLogger(__name__)
 
 
 def record_upload_failure(user: User, details: str) -> None:
@@ -45,10 +47,44 @@ def record_upload_failure(user: User, details: str) -> None:
             )
             audit_db.commit()
     except Exception:
-        # Do not expose internal database errors to the client.
-        # Production deployments should alert on audit-write failures.
-        # This fallback does not guarantee the event was recorded.
-        pass
+        # Keep the upload's original failure as the client-visible error, but
+        # make audit persistence failures visible to application logs.
+        # A production deployment should also alert on this condition.
+        logger.error(
+            "Failed to persist document-upload failure audit event; "
+            "the event may be missing."
+        )
+
+
+def record_document_audit(
+    db: Session,
+    actor: User | None,
+    action: str,
+    outcome: str,
+    document_id: int | None = None,
+    details: str | None = None,
+) -> None:
+    """
+    Record a document-related event without violating the audit FK.
+
+    For a requested ID that does not identify an existing document, store
+    document_id=NULL and preserve the attempted ID in details instead.
+    """
+    safe_document_id = document_id
+
+    if document_id is not None and db.get(Document, document_id) is None:
+        safe_document_id = None
+        requested_id = f"requested_document_id={document_id}"
+        details = f"{details}; {requested_id}" if details else requested_id
+
+    record_audit(
+        db=db,
+        actor=actor,
+        action=action,
+        outcome=outcome,
+        document_id=safe_document_id,
+        details=details,
+    )
 
 
 def get_document_or_audit_denial(
@@ -62,7 +98,7 @@ def get_document_or_audit_denial(
             db, user, document_id, permission
         )
     except HTTPException as exc:
-        record_audit(
+        record_document_audit(
             db=db,
             actor=user,
             action=f"document_{permission}",
@@ -82,8 +118,22 @@ def get_document_or_audit_denial(
 def create_document(
     payload: DocumentCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(require_roles("owner")),
+    user: User = Depends(get_current_user),
 ):
+    if user.role != "owner":
+        record_audit(
+            db,
+            user,
+            action="document_create",
+            outcome="denied",
+            details="Only owners can create documents",
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only owners can create documents",
+        )
+
     document = Document(
         title=payload.title,
         description=payload.description,
@@ -119,15 +169,28 @@ def list_documents(
     category: str | None = Query(default=None, max_length=100),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """List only documents visible to the caller, with optional filters."""
+    """List only documents visible to the caller, with optional filters and pagination."""
+
     if date_from is not None and date_to is not None and date_from > date_to:
+        record_audit(
+            db,
+            user,
+            action="document_list",
+            outcome="failure",
+            details="Invalid date range: date_from is after date_to",
+        )
+        db.commit()
+
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="date_from must be on or before date_to",
         )
+
 
     # Apply the access-control scope before any user-supplied filters.
     # Filters must never reveal documents the caller cannot already access.
@@ -184,7 +247,28 @@ def list_documents(
         .distinct()
         .order_by(Document.created_at.desc(), Document.id.desc())
     )
-    return list(db.scalars(statement).all())
+
+    if limit is not None:
+        statement = statement.limit(limit)
+    if offset:
+        statement = statement.offset(offset)
+
+    documents = list(db.scalars(statement).all())
+
+    record_audit(
+        db,
+        user,
+        action="document_list",
+        outcome="success",
+        details=(
+            f"Returned {len(documents)} accessible documents; "
+            f"search_used={bool(normalized_search)}; "
+            f"limit={limit}; offset={offset}"
+        ),
+    )
+    db.commit()
+
+    return documents
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)
@@ -221,10 +305,21 @@ def update_document(
 
     changes = payload.model_dump(exclude_unset=True)
     if not changes:
+        record_audit(
+            db,
+            user,
+            action="document_update",
+            outcome="failure",
+            document_id=document.id,
+            details="Empty update request; no fields provided",
+        )
+        db.commit()
+
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Provide at least one field to update",
         )
+
 
     for field, value in changes.items():
         setattr(document, field, value)
@@ -251,7 +346,7 @@ def delete_document(
 
     # Deletion is owner-only, even if another user has edit access.
     if document is None or document.owner_id != user.id:
-        record_audit(
+        record_document_audit(
             db, user,
             action="document_delete",
             outcome="denied",
@@ -304,7 +399,7 @@ def grant_document_permission(
     document = db.get(Document, document_id)
 
     if document is None or document.owner_id != user.id:
-        record_audit(
+        record_document_audit(
             db,
             user,
             action="permission_grant",
@@ -320,16 +415,35 @@ def grant_document_permission(
 
     target = db.get(User, user_id)
     if target is None or not target.is_active:
+        record_audit(
+            db,
+            user,
+            action="permission_grant",
+            outcome="failure",
+            document_id=document_id,
+            details=f"Target user {user_id} not found or inactive",
+        )
+        db.commit()
         raise HTTPException(
             status_code=404,
             detail="Target user not found",
         )
 
     if target.id == user.id:
+        record_audit(
+            db,
+            user,
+            action="permission_grant",
+            outcome="failure",
+            document_id=document_id,
+            details="Owner attempted to grant permission to themselves",
+        )
+        db.commit()
         raise HTTPException(
             status_code=400,
             detail="You already own this document",
         )
+
 
     permission = db.scalar(
         select(DocumentPermission).where(
@@ -382,7 +496,7 @@ def revoke_document_permission(
     document = db.get(Document, document_id)
 
     if document is None or document.owner_id != user.id:
-        record_audit(
+        record_document_audit(
             db,
             user,
             action="permission_revoke",

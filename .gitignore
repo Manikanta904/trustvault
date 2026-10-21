@@ -13,6 +13,11 @@ __pycache__/
 *.db
 *.sqlite3
 
+# Database dumps and exports
+*.dump
+*.sql
+*.tar
+
 # Uploaded files
 storage/
 uploads/
