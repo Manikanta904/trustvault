@@ -12,3 +12,5 @@ python-dotenv
 pytest
 httpx
 email-validator
+pypdf
+reportlab
