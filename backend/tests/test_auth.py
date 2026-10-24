@@ -190,3 +190,87 @@ def test_expired_jwt_is_rejected():
     )
 
     assert response.status_code == 401
+
+
+def test_demo_accounts_authentication_and_roles():
+    """Verify Admin, Owner, and Viewer demo accounts authenticate and have correct roles."""
+    from seed_demo import seed_demo_accounts, DEMO_USERS, DEFAULT_DEMO_PASSWORD
+
+    # Ensure demo accounts are seeded with standard credentials
+    with SessionLocal() as db:
+        seed_demo_accounts(db=db, sync_credentials=True)
+
+    expected_accounts = [
+        ("admin@example.com", "admin"),
+        ("owner@example.com", "owner"),
+        ("viewer@example.com", "viewer"),
+    ]
+
+    for email, role in expected_accounts:
+        # 1. Correct credentials succeed
+        login_res = client.post(
+            "/auth/login",
+            data={
+                "username": email,
+                "password": DEFAULT_DEMO_PASSWORD,
+            },
+        )
+        assert login_res.status_code == 200, f"Login failed for {email}: {login_res.text}"
+        token = login_res.json()["access_token"]
+
+        # 2. /auth/me returns the verified role
+        me_res = client.get(
+            "/auth/me",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert me_res.status_code == 200
+        user_info = me_res.json()
+        assert user_info["email"] == email
+        assert user_info["role"] == role
+        assert user_info["is_active"] is True
+
+        # 3. Incorrect password is rejected
+        bad_res = client.post(
+            "/auth/login",
+            data={
+                "username": email,
+                "password": "wrongpassword!123",
+            },
+        )
+        assert bad_res.status_code == 401
+
+
+def test_demo_accounts_seed_synchronization_and_rerun_safety():
+    """Verify demo seed idempotency and explicit credential synchronization."""
+    from seed_demo import seed_demo_accounts, DEMO_USERS, DEFAULT_DEMO_PASSWORD
+    from sqlalchemy import select
+
+    with SessionLocal() as db:
+        # First ensure demo accounts exist
+        seed_demo_accounts(db=db, sync_credentials=True)
+
+        # Record state
+        users_before = {
+            u.email: (u.password_hash, u.role, u.is_active)
+            for u in db.scalars(
+                select(User).where(User.email.in_([e for _, e, _ in DEMO_USERS]))
+            ).all()
+        }
+
+        # Safe rerun without sync_credentials should skip and return 0
+        rerun_count = seed_demo_accounts(db=db, sync_credentials=False)
+        assert rerun_count == 0
+
+        # State must not be modified
+        users_after = {
+            u.email: (u.password_hash, u.role, u.is_active)
+            for u in db.scalars(
+                select(User).where(User.email.in_([e for _, e, _ in DEMO_USERS]))
+            ).all()
+        }
+        assert users_before == users_after
+
+        # Explicit synchronization should return total demo users count
+        sync_count = seed_demo_accounts(db=db, sync_credentials=True)
+        assert sync_count == len(DEMO_USERS)
+

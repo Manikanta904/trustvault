@@ -112,28 +112,37 @@ alembic history --verbose
 
 The demo seeding script (`seed_demo.py`) safely provisions initial demo accounts without overwriting existing accounts, changing existing roles, or reactivating disabled accounts.
 
+> [!WARNING]
+> **LOCAL-DEMO-ONLY CREDENTIALS**: The credentials below are strictly for local evaluation and hackathon testing. Never deploy or reuse these credentials in any staging, production, or publicly reachable environment.
+
+### Standard Local Demo Accounts
+- **Admin:** `admin@example.com` / `123456789abc` (`admin` role — audit logs & compliance)
+- **Owner:** `owner@example.com` / `123456789abc` (`owner` role — document creation, editing, & sharing)
+- **Viewer:** `viewer@example.com` / `123456789abc` (`viewer` role — granted document access)
+
+Passwords are never stored in plaintext; all accounts are hashed using Argon2id (`pwdlib`).
+
 From the `backend` directory:
 
 ```bash
-# Run interactive seed script
+# 1. Provision demo accounts (safe & idempotent; skips accounts that already exist)
 python seed_demo.py
+
+# 2. Explicitly synchronize existing demo accounts to standard local credentials
+python seed_demo.py --sync-credentials
 ```
 
-For unattended / scriptable provisioning, set environment variables prior to running:
+For custom unattended / scriptable provisioning, set environment variables prior to running:
 
 ```bash
-export DEMO_PASSWORD_ADMIN="YourSecurePass123!"
-export DEMO_PASSWORD_OWNER="YourSecurePass123!"
-export DEMO_PASSWORD_VIEWER="YourSecurePass123!"
+export DEMO_PASSWORD_ADMIN="YourCustomPass123!"
+export DEMO_PASSWORD_OWNER="YourCustomPass123!"
+export DEMO_PASSWORD_VIEWER="YourCustomPass123!"
 python seed_demo.py
 ```
 
-Default demo accounts provisioned:
-- **Admin:** `admin@example.com` (`admin` role)
-- **Owner:** `owner@example.com` (`owner` role)
-- **Viewer:** `viewer@example.com` (`viewer` role)
+*Note: Rerunning `seed_demo.py` without flags detects existing accounts and safely skips them without altering passwords, roles, or active statuses. To intentionally reset demo account passwords back to the standard local credentials, run with `--sync-credentials`.*
 
-*Note: Rerunning `seed_demo.py` will detect existing accounts and safely skip them without modifying passwords or roles.*
 
 ---
 

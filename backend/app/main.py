@@ -20,6 +20,7 @@ from app.security import hash_password
 from app.audit import record_audit
 
 from app.routers.admin import router as admin_router
+from app.routers.users import router as users_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,6 +39,7 @@ app = FastAPI(
 
 app.include_router(documents_router)
 app.include_router(admin_router)
+app.include_router(users_router)
 class UserResponse(BaseModel):
     id: int
     name: str

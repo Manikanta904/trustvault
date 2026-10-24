@@ -64,3 +64,24 @@ class PermissionResponse(BaseModel):
     document_id: int
     user_id: int
     permission_type: str
+
+
+class UserSearchResult(BaseModel):
+    id: int
+    name: str
+    email: str
+    role: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DocumentPermissionDetailResponse(BaseModel):
+    id: int
+    document_id: int
+    user_id: int
+    user_name: str
+    user_email: str
+    permission_type: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

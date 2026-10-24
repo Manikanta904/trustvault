@@ -6,6 +6,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Query,
     UploadFile,
@@ -22,6 +23,7 @@ from app.file_storage import get_storage_path, save_upload
 from app.models import Document, DocumentPermission, User
 from app.schemas import (
     DocumentCreate,
+    DocumentPermissionDetailResponse,
     DocumentResponse,
     DocumentUpdate,
     PermissionGrantRequest,
@@ -92,6 +94,7 @@ def get_document_or_audit_denial(
     user: User,
     document_id: int,
     permission: str,
+    action: str | None = None,
 ) -> Document:
     try:
         return get_authorized_document(
@@ -101,7 +104,7 @@ def get_document_or_audit_denial(
         record_document_audit(
             db=db,
             actor=user,
-            action=f"document_{permission}",
+            action=action or f"document_{permission}",
             outcome="denied",
             document_id=document_id,
             details=f"HTTP {exc.status_code}",
@@ -384,6 +387,65 @@ def delete_document(
     return None
 
 
+@router.get(
+    "/{document_id}/permissions",
+    response_model=list[DocumentPermissionDetailResponse],
+)
+def list_document_permissions(
+    document_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    document = db.get(Document, document_id)
+
+    if document is None or document.owner_id != user.id:
+        record_document_audit(
+            db,
+            user,
+            action="permission_list",
+            outcome="denied",
+            document_id=document_id,
+            details="Missing document or caller is not owner",
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        )
+
+    statement = (
+        select(DocumentPermission, User)
+        .join(User, User.id == DocumentPermission.user_id)
+        .where(DocumentPermission.document_id == document_id)
+        .order_by(DocumentPermission.created_at.desc(), DocumentPermission.id.desc())
+    )
+    rows = db.execute(statement).all()
+
+    results = [
+        DocumentPermissionDetailResponse(
+            id=perm.id,
+            document_id=perm.document_id,
+            user_id=perm.user_id,
+            user_name=target_user.name,
+            user_email=target_user.email,
+            permission_type=perm.permission_type,
+            created_at=perm.created_at,
+        )
+        for perm, target_user in rows
+    ]
+
+    record_audit(
+        db,
+        user,
+        action="permission_list",
+        outcome="success",
+        document_id=document_id,
+        details=f"Listed {len(results)} permissions",
+    )
+    db.commit()
+
+    return results
+
 
 @router.put(
     "/{document_id}/permissions/{user_id}",
@@ -554,9 +616,9 @@ def revoke_document_permission(
 )
 async def upload_document(
     file: UploadFile = File(...),
-    title: str | None = None,
-    description: str | None = None,
-    category: str | None = None,
+    title: str | None = Form(default=None),
+    description: str | None = Form(default=None),
+    category: str | None = Form(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -632,7 +694,7 @@ def download_document(
     user: User = Depends(get_current_user),
 ):
     document = get_document_or_audit_denial(
-        db, user, document_id, "read"
+        db, user, document_id, "read", action="document_download"
     )
 
     try:
