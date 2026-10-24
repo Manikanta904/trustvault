@@ -1,7 +1,9 @@
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -40,6 +42,29 @@ app = FastAPI(
     description="Secure document sharing and auditing",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+# CORS configuration for frontend-backend communication
+default_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://trustvault-secure-ahte.onrender.com",
+]
+
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+if cors_origins_env:
+    for origin in cors_origins_env.split(","):
+        cleaned = origin.strip()
+        if cleaned and cleaned not in default_origins:
+            default_origins.append(cleaned)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=default_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 app.include_router(documents_router)

@@ -274,3 +274,36 @@ def test_demo_accounts_seed_synchronization_and_rerun_safety():
         sync_count = seed_demo_accounts(db=db, sync_credentials=True)
         assert sync_count == len(DEMO_USERS)
 
+
+def test_cors_preflight_and_allowed_origins():
+    """Verify CORS preflight handling for deployed and local frontend origins."""
+    headers = {
+        "Origin": "https://trustvault-secure-ahte.onrender.com",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type",
+    }
+    response = client.options("/auth/login", headers=headers)
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "https://trustvault-secure-ahte.onrender.com"
+    assert "POST" in response.headers.get("access-control-allow-methods", "")
+
+    # Local origin
+    local_headers = {
+        "Origin": "http://localhost:5173",
+        "Access-Control-Request-Method": "POST",
+    }
+    local_response = client.options("/auth/login", headers=local_headers)
+    assert local_response.status_code == 200
+    assert local_response.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+def test_normalize_database_url():
+    """Verify database URL normalization for postgres:// and standard postgresql:// schemes."""
+    from app.database import normalize_database_url
+
+    assert normalize_database_url("postgres://user:pass@host:5432/db") == "postgresql+psycopg://user:pass@host:5432/db"
+    assert normalize_database_url("postgresql://user:pass@host:5432/db") == "postgresql+psycopg://user:pass@host:5432/db"
+    assert normalize_database_url("postgresql+psycopg://user:pass@host:5432/db") == "postgresql+psycopg://user:pass@host:5432/db"
+    assert normalize_database_url("sqlite:///local.db") == "sqlite:///local.db"
+
+

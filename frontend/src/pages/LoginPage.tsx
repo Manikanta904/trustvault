@@ -15,11 +15,11 @@ import {
   LockKeyhole,
 } from 'lucide-react';
 
-// Local demonstration password for testing and evaluation.
-// In production builds without explicit VITE_DEMO_PASSWORD configuration,
-// this password is not embedded into the production bundle.
-const LOCAL_DEMO_PASSWORD = import.meta.env.VITE_DEMO_PASSWORD || (import.meta.env.DEV ? '123456789abc' : '');
-const isDemoAvailable = import.meta.env.DEV || Boolean(import.meta.env.VITE_DEMO_PASSWORD);
+// Demonstration password for testing and evaluation.
+// Evaluators can configure a custom demo password via VITE_DEMO_PASSWORD if desired,
+// or use the standard default evaluation demo password.
+const LOCAL_DEMO_PASSWORD = import.meta.env.VITE_DEMO_PASSWORD || '123456789abc';
+const isDemoAvailable = true;
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
@@ -297,7 +297,7 @@ export const LoginPage: React.FC = () => {
 
           {/* User-facing footer */}
           <div className="pt-4 text-center text-xs text-slate-400">
-            <p>Secure access to your documents</p>
+            <p>Secure access to your documents.</p>
           </div>
         </div>
       </div>
