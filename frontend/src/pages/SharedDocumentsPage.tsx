@@ -4,8 +4,8 @@ import { listDocumentsApi, downloadDocumentApi } from '../api/documents';
 import { extractErrorMessage } from '../api/client';
 import {
   Users,
-  Download,
   Eye,
+  Download,
   Edit3,
   RefreshCw,
   AlertCircle,
@@ -25,6 +25,19 @@ export const SharedDocumentsPage: React.FC = () => {
   const [downloadingId, setDownloadingId] = useState<number | null>(null);
 
   const [editingDoc, setEditingDoc] = useState<DocumentItem | null>(null);
+
+  const handleDownload = async (doc: DocumentItem) => {
+    setDownloadingId(doc.id);
+    setActionSuccess(null);
+    try {
+      await downloadDocumentApi(doc.id, doc.original_filename);
+      setActionSuccess(`Downloaded watermarked copy of "${doc.title}".`);
+    } catch (err: unknown) {
+      setError(extractErrorMessage(err, 'Failed to download watermarked copy.'));
+    } finally {
+      setDownloadingId(null);
+    }
+  };
 
   const fetchSharedDocuments = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
@@ -61,20 +74,6 @@ export const SharedDocumentsPage: React.FC = () => {
     };
   }, [user?.id]);
 
-  const handleDownload = async (doc: DocumentItem) => {
-    setDownloadingId(doc.id);
-    setActionSuccess(null);
-    try {
-      await downloadDocumentApi(doc.id, doc.original_filename);
-      setActionSuccess(`Downloaded "${doc.title}".`);
-    } catch (err) {
-      setError(extractErrorMessage(err, 'Download denied. Your grant may have been revoked.'));
-      // Immediate revocation verification: re-fetch documents list
-      fetchSharedDocuments();
-    } finally {
-      setDownloadingId(null);
-    }
-  };
 
   const formatFileSize = (bytes: number): string => {
     if (bytes < 1024) return `${bytes} B`;
@@ -140,10 +139,11 @@ export const SharedDocumentsPage: React.FC = () => {
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
                   <th className="px-6 py-3">Document Title</th>
-                  <th className="px-6 py-3">Owner</th>
+                  <th className="px-6 py-3">Shared by</th>
                   <th className="px-6 py-3">Category</th>
                   <th className="px-6 py-3">File Size</th>
                   <th className="px-6 py-3">Date Shared</th>
+                  <th className="px-6 py-3">Access Level</th>
                   <th className="px-6 py-3 text-right">Actions</th>
                 </tr>
               </thead>
@@ -161,8 +161,13 @@ export const SharedDocumentsPage: React.FC = () => {
                         {doc.original_filename}
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-xs font-mono font-medium text-slate-700">
-                      User #{doc.owner_id}
+                    <td className="px-6 py-4">
+                      <div className="text-xs font-medium text-slate-800">
+                        {doc.owner_name || `User #${doc.owner_id}`}
+                      </div>
+                      <div className="text-[11px] text-slate-400 truncate max-w-[150px]">
+                        {doc.owner_email || ''}
+                      </div>
                     </td>
                     <td className="px-6 py-4">
                       {doc.category ? (
@@ -179,31 +184,46 @@ export const SharedDocumentsPage: React.FC = () => {
                     <td className="px-6 py-4 text-xs text-slate-500">
                       {new Date(doc.created_at).toLocaleDateString()}
                     </td>
+                    <td className="px-6 py-4">
+                      <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                        doc.user_permission === 'edit'
+                          ? 'bg-purple-100 text-purple-800'
+                          : 'bg-emerald-100 text-emerald-800'
+                      }`}>
+                        {doc.user_permission === 'edit' ? 'Can Edit' : 'Read Only'}
+                      </span>
+                    </td>
                     <td className="px-6 py-4 text-right space-x-1.5 whitespace-nowrap">
+                      {/* In-Browser Secure View */}
+                      <Link
+                        to={`/documents/${doc.id}`}
+                        title="View Document in Browser"
+                        className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-colors"
+                      >
+                        <Eye className="w-3.5 h-3.5 mr-1" />
+                        View
+                      </Link>
+
+                      {/* Download Watermarked PDF */}
                       <button
                         onClick={() => handleDownload(doc)}
                         disabled={downloadingId === doc.id}
-                        title="Download Document"
+                        title="Download Watermarked PDF"
                         className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center"
                       >
                         <Download className="w-4 h-4" />
                       </button>
 
-                      <button
-                        onClick={() => setEditingDoc(doc)}
-                        title="Edit Metadata (Requires Edit Grant)"
-                        className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center"
-                      >
-                        <Edit3 className="w-4 h-4" />
-                      </button>
-
-                      <Link
-                        to={`/documents/${doc.id}`}
-                        title="View Details"
-                        className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </Link>
+                      {/* Edit Metadata (Requires Edit Grant) */}
+                      {doc.user_permission === 'edit' && (
+                        <button
+                          onClick={() => setEditingDoc(doc)}
+                          title="Edit Metadata (Requires Edit Grant)"
+                          className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

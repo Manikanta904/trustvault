@@ -170,30 +170,82 @@ This document records identified threats, concrete attacker scenarios, expected 
 - **Residual Risk & Accepted Limitation:** Developers must exercise discipline never to use `git add -f` on ignored files.
 - **Status:** **Closed**
 
+### T14: Leak Attribution, Traceable Watermarking, & Physical/Screenshot Capture Limitations
+- **Asset & Trust Boundary:** Proprietary shared document copies; User-to-External/Offline boundary.
+- **Attacker Capability & Attack Scenario:** An authorized shared recipient downloads or previews a confidential document and redistributes it externally (via email, upload, or screen capture/photograph), attempting to hide the leak source.
+- **Expected Security Invariant:** Every shared preview and download must be dynamically watermarked server-side with the authenticated viewer's identity (email and name), UTC generation timestamp explicitly labeled as UTC, unique document ID, and cryptographic trace reference. Stored original master PDFs must remain unmodified.
+- **Mitigation Implemented in Actual Code:** 
+  1. `app/watermark.py`: Generates viewer-specific watermarked PDF in-memory using `pypdf` and `reportlab`. Overlays two subtle diagonal banners per page containing viewer name, email, UTC timestamp, and trace ID. Fails closed (HTTP 422) on encrypted or malformed PDFs.
+  2. `app/routers/documents.py` (`download_document`): Owner receives original master file; shared viewers receive the generated watermarked copy.
+  3. Frontend `DocumentViewer.tsx`: Renders repeated diagonal security watermark overlays during authenticated browser preview.
+- **Relevant Automated Test Name(s) & Assertions:** `test_phase4_watermark_and_downloads.py` (`test_01` through `test_08`): Verifies original file checksum is unchanged on disk, viewer-specific watermark contains viewer email and UTC timestamp across all pages, and different users receive distinct watermarks.
+- **Actual Verification Performed & Result:** All 8 watermarking automated tests passed; verified watermarked PDF text extraction in automated pytest suite.
+- **Crucial Security Limitations & Residual Risks (Explicit Disclosure):**
+  1. **Attribution Aid, Not Proof:** A watermark assists forensic attribution by identifying whose authorized account was used to view/download the file. However, it does not constitute legal proof that the named account holder personally leaked or redistributed the document (e.g. account compromise, shoulder-surfing, or unattended workstation).
+  2. **Screenshots & External Redistribution:** Technical controls running inside a browser or PDF viewer cannot prevent external physical photography, OS-level screen recording tools, or third-party screen captures.
+  3. **No Retroactive Recall:** Once an authorized user downloads a watermarked copy to their local filesystem, subsequent permission revocation terminates future server access but cannot delete or recall already downloaded local files.
+- **Status:** **Closed (Application and watermarking controls implemented and verified; offline capture limitations documented)**
+
+### T15: Authentication & Sensitive Operation Rate Limiting (Brute-Force & Enumeration)
+- **Asset & Trust Boundary:** Authentication surface and document enumeration; Network-to-Application boundary.
+- **Attacker Capability & Attack Scenario:** An attacker launches high-frequency credential stuffing against `/auth/login`, rapid user registration floods against `/auth/register`, or employee directory enumeration against `/users/search`.
+- **Expected Security Invariant:** High-frequency abuse must be throttled with HTTP 429 Too Many Requests and a `Retry-After` header before accounts can be compromised or server resources exhausted.
+- **Mitigation Implemented in Actual Code:** `app/rate_limiter.py` implements a thread-safe sliding-window rate limiter:
+  - `/auth/login`: 10 attempts/minute per IP.
+  - `/auth/register`: 5 attempts/minute per IP.
+  - `/users/search`: 30 queries/minute per user/IP.
+  - `/documents/upload` and bulk sharing: 30 requests/minute per user.
+- **Relevant Automated Test Name(s) & Assertions:** `test_phase4_watermark_and_downloads.py::test_17_rate_limiter_blocks_excessive_requests` (asserts HTTP 429 returned after threshold).
+- **Actual Verification Performed & Result:** Verified HTTP 429 returned with `Retry-After` header upon exceeding configured limits.
+- **Residual Risk & Accepted Limitation:** Current rate limiter is memory-backed (single instance). Multi-instance horizontal scaling requires a shared backend (such as Redis) to synchronize sliding windows across processes.
+- **Status:** **Closed (for single-node deployment)**
+
+### T16: Document Filter & Search Metadata Privacy
+- **Asset & Trust Boundary:** Document repository metadata; User isolation boundary.
+- **Attacker Capability & Attack Scenario:** A user filters documents by owner name or email (`GET /documents?owner_search=...`) or category, hoping the filter bypasses document authorization and reveals metadata or titles of unauthorized documents.
+- **Expected Security Invariant:** Filters must only operate on the subset of documents that the caller is already authorized to access (either as owner or through an active permission grant). Unauthorized documents must never be returned.
+- **Mitigation Implemented in Actual Code:** In `app/routers/documents.py` (`list_documents`), base access predicate `or_(Document.owner_id == user.id, DocumentPermission.user_id == user.id)` is applied first. The `owner_search` query parameter performs an inner join on `User` and filters only within the authorized set. Document response schemas safely include `owner_name`, `owner_email`, and `user_permission` without exposing sensitive user hashes or unrelated account metadata.
+- **Relevant Automated Test Name(s) & Assertions:** `test_phase4_watermark_and_downloads.py::test_18_owner_search_filter_returns_only_authorized_documents`.
+- **Actual Verification Performed & Result:** Verified unshared documents matching owner email are not returned to unrelated callers.
+- **Residual Risk & Accepted Limitation:** None.
+- **Status:** **Closed**
+
+### T17: Shared Viewer Download Audit Visibility for Document Owners
+- **Asset & Trust Boundary:** Document owner audit visibility; Document owner visibility boundary.
+- **Attacker Capability & Attack Scenario:** A shared user downloads a document, but the document owner has no visibility into who accessed or downloaded their document, preventing accountability.
+- **Expected Security Invariant:** Shared downloads must be logged with actor identity and made visible to the document owner through a dedicated, owner-scoped activity view without exposing other users' private documents.
+- **Mitigation Implemented in Actual Code:** `app/routers/documents.py`: `GET /documents/{document_id}/activity` checks `document.owner_id == user.id`, queries `AuditLog` joined with `User`, and returns download and preview history with actor display name, email, and timestamp. Denied for non-owners (HTTP 404).
+- **Relevant Automated Test Name(s) & Assertions:** `test_phase4_watermark_and_downloads.py::test_14_owner_activity_and_admin_audit_visibility`.
+- **Actual Verification Performed & Result:** Verified owner receives download events with recipient name/email; unrelated user gets 404.
+- **Residual Risk & Accepted Limitation:** Relies on in-app activity view. Email notification is not configured by default.
+- **Status:** **Closed**
+
 ---
 
 ## 5. Security Invariants Summary
 
 1. **Mandatory Authentication:** All protected endpoints reject unauthenticated requests with HTTP 401.
 2. **Explicit Authorization:** Ownership or an explicit per-document grant is mandatory for reading, downloading, or editing.
-3. **Privilege Separation:** `read` permission allows viewing and downloading; `edit` allows metadata modification; neither allows deletion or permission management.
-4. **Owner-Only Lifecycle:** Only the document owner can delete the document or grant/revoke permissions.
-5. **Immediate Revocation:** Revoking permission blocks subsequent requests immediately on the live database.
-6. **Admin Isolation:** Administrators cannot read or download document contents without an explicit document grant.
-7. **Storage Isolation:** Private files are stored under random 32-hex keys and never served through static directories.
-8. **Append-Only Auditing:** Audit rows cannot be updated, deleted, or truncated by the application role.
-9. **Atomic Consistency:** Security operations and audit records share database transactions; audit write failure rolls back the operation.
+3. **Privilege Separation:** `read` permission allows viewing and watermarked downloading; `edit` allows metadata modification; neither allows deletion or permission management.
+4. **Watermarked Shared Delivery:** Shared downloads always stream a viewer-specific watermarked PDF with UTC timestamp and trace reference; only the owner downloads the original stored file.
+5. **Owner-Only Lifecycle:** Only the document owner can delete the document or grant/revoke permissions.
+6. **Immediate Revocation:** Revoking permission blocks subsequent requests immediately on the live database.
+7. **Admin Isolation:** Administrators cannot read or download document contents without an explicit document grant.
+8. **Storage Isolation:** Private files are stored under random 32-hex keys outside the web root and never served through static directories.
+9. **Append-Only Auditing:** Audit rows cannot be updated, deleted, or truncated by the application role due to database triggers and privilege grants.
 10. **Enumeration Resistance:** Unauthorized and missing document requests uniformly return HTTP 404.
 
 ---
 
-## 6. Accepted and Outstanding Risks
+## 6. Accepted and Outstanding Risks (Explicitly Marked Unimplemented Items)
 
-- **Heuristic Malware Scanning:** The backend validates file signatures, UTF-8 validity, and file size limits. Comprehensive antivirus scanning (e.g. ClamAV daemon) must be deployed at the container/infrastructure layer.
+- **Malware Scanning (Not Implemented):** The backend validates file signatures, UTF-8 validity, and file size limits. Comprehensive virus/malware scanning (e.g. ClamAV daemon) is NOT implemented at the application layer and must be deployed at the container/infrastructure layer.
+- **Encryption at Rest (Not Implemented):** Uploaded files and database tables are stored in cleartext on the filesystem; transparent disk encryption (e.g., LUKS, BitLocker, or AWS KMS) is NOT implemented at the application layer and must be provided by the hosting environment.
+- **Database Hash-Chaining (Not Implemented):** Evaluated during threat modeling; rejected in favor of PostgreSQL append-only triggers and restricted role privileges (`REVOKE UPDATE, DELETE ON audit_logs`). Hash chaining without external hardware roots (HSM) adds concurrency overhead without preventing a database superuser from rewriting the chain.
+- **Token Revocation Blacklist (Not Implemented):** JWT tokens cannot be revoked before their expiration. However, document permission revocation is enforced live in PostgreSQL on every request, completely neutralizing token longevity for document access.
 - **Database Superuser Privilege:** Database triggers prevent mutation by `trustvault_app`, but cannot stop a PostgreSQL superuser. WORM (Write-Once-Read-Many) storage is recommended for enterprise compliance.
-- **Local Client Copies:** Revocation halts server access immediately, but cannot reach files already downloaded to client devices.
-- **Network Rate Limiting:** Brute-force protection on `/auth/login` should be enforced by an API gateway or reverse proxy (Nginx, Cloudflare) prior to public hosting.
-- **Starlette TestClient Warnings:** Three Starlette library deprecation warnings occur during test execution; these are third-party framework notices and do not affect runtime application security.
+- **Screenshots & Offline Leakage:** Technical controls cannot stop physical photography, display scraping, or external distribution of already downloaded files. Watermarking provides attribution aid, not leak prevention.
+- **Distributed Rate Limiting:** Rate limiting uses in-memory sliding windows. A distributed Redis cluster is recommended for multi-instance deployments.
 
 ---
 
@@ -201,5 +253,14 @@ This document records identified threats, concrete attacker scenarios, expected 
 
 - **2026-10-19:** Registration test suite passed (7 passed). Full test suite passed (24 passed).
 - **2026-10-20:** Admin audit endpoint verified through Swagger and automated tests. File storage tests passed (7 passed). Document API tests passed (11 passed). Full suite passed (44 passed).
-- **2026-10-21:** Hardening milestone: verified document listing pagination, admin audit log filtering by document ID, denial audit logging for non-owners and non-admins, transaction abort on delete/download audit failure, safe demo seeding without schema mutation, append-only trigger protections, and git repository hygiene.
-- **Final Regression Suite Run (2026-10-21):** **80 passed, 3 warnings in 14.10 seconds** (`.venv\Scripts\pytest -v`).
+- **2026-10-21:** Hardening milestone: verified document listing pagination, admin audit log filtering by document ID, denial audit logging for non-owners and non-admins, transaction abort on delete/download audit failure, safe demo seeding without schema mutation, append-only trigger protections, and git repository hygiene (80 passed).
+- **2026-10-24:** Phase 4 Security Hardening & Traceable Watermarking:
+  - Server-side PDF watermarking with viewer identity, UTC timestamp, document ID, and trace reference (`app/watermark.py`).
+  - Owner original vs. shared watermarked download policy (`app/routers/documents.py`).
+  - Owner document activity & download history endpoint (`/documents/{id}/activity`).
+  - Owner name/email search filters and repository identity visibility.
+  - Rate limiting on authentication, user search, and sensitive document operations.
+  - Complete backend test suite: **122 passed, 0 failed in 30.44s** (`.venv\Scripts\pytest -q`).
+  - Frontend production build: **Passed with 0 errors** (`npm run build`).
+  - Frontend lint: **Passed with 0 errors and 0 warnings** (`npm run lint`).
+

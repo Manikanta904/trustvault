@@ -41,7 +41,16 @@ def validate_file_header(extension: str, header: bytes) -> bool:
 
 async def save_upload(upload: UploadFile) -> tuple[str, str, int]:
     """Validate and store an upload under a random, server-generated key."""
-    filename = (upload.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    # Strip path separators, null bytes, and traversal sequences
+    clean_name = (upload.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    clean_name = clean_name.replace("\x00", "").strip()
+    if clean_name in {".", ".."} or not clean_name:
+        raise HTTPException(
+            status_code=415,
+            detail="Invalid filename.",
+        )
+
+    filename = clean_name
     extension = Path(filename).suffix.lower()
 
     if not filename or extension not in ALLOWED_TYPES:

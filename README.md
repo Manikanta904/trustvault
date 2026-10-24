@@ -185,6 +185,10 @@ pytest tests/test_admin_api.py
 pytest tests/test_file_storage.py
 pytest tests/test_audit_integrity.py
 pytest tests/test_registration.py
+pytest tests/test_phase4_watermark_and_downloads.py
+
+# Run complete regression suite (122 tests)
+pytest -q
 ```
 
 ---
@@ -200,14 +204,39 @@ pytest tests/test_registration.py
 | Create Metadata (`POST /documents`) | 401 | 403 (Denied) | 403 (Denied) | 403 (Denied) | Allowed | 403 (Denied) |
 | List Documents (`GET /documents`) | 401 | Visible grants only | Visible grants only | Visible grants only | Own + shared | Own + shared only |
 | Read Metadata (`GET /documents/{id}`) | 401 | 404 (Denied) | Allowed | Allowed | Allowed | 404 (Denied) |
-| Download File (`GET /documents/{id}/download`) | 401 | 404 (Denied) | Allowed | Allowed | Allowed | 404 (Denied) |
+| In-Browser Preview (`GET /documents/{id}/view`) | 401 | 404 (Denied) | Allowed (Watermarked) | Allowed (Watermarked) | Allowed | 404 (Denied) |
+| Download Original (`GET /documents/{id}/download`) | 401 | 404 (Denied) | 404 (Denied) | 404 (Denied) | Allowed (Original) | 404 (Denied) |
+| Download Shared (`GET /documents/{id}/download`) | 401 | 404 (Denied) | Allowed (Watermarked) | Allowed (Watermarked) | Allowed (Original) | 404 (Denied) |
 | Update Metadata (`PATCH /documents/{id}`) | 401 | 404 (Denied) | 404 (Denied) | Allowed | Allowed | 404 (Denied) |
 | Delete Document (`DELETE /documents/{id}`) | 401 | 404 (Denied) | 404 (Denied) | 404 (Denied) | Allowed | 404 (Denied) |
 | Grant Permission (`PUT /documents/{id}/permissions/{user_id}`) | 401 | 404 (Denied) | 404 (Denied) | 404 (Denied) | Allowed | 404 (Denied) |
 | Revoke Permission (`DELETE /documents/{id}/permissions/{user_id}`) | 401 | 404 (Denied) | 404 (Denied) | 404 (Denied) | Allowed | 404 (Denied) |
+| Owner Activity History (`GET /documents/{id}/activity`) | 401 | 404 (Denied) | 404 (Denied) | 404 (Denied) | Allowed | 404 (Denied) |
 | View Audit Logs (`GET /admin/audit-logs`) | 401 | 403 (Denied) | 403 (Denied) | 403 (Denied) | 403 (Denied) | Allowed |
 
 *Notice:* Inaccessible documents return `404 Not Found` rather than `403 Forbidden` to prevent document-existence enumeration by unauthorized callers.
+
+### Sensitive Endpoint API Specification
+
+| Endpoint | Method | Required Role | Document Permission | Request Format | Success Response | Expected Failure Behavior |
+|---|---|---|---|---|---|---|
+| `/auth/login` | POST | Public | None | `application/x-www-form-urlencoded` (`username`, `password`) | 200 OK (`access_token`, `token_type`, `user`) | 400 (Bad input), 401 (Invalid credentials/inactive), 429 (Rate limit: >10/min) |
+| `/auth/register` | POST | Public | None | JSON (`name`, `email`, `password`) | 201 Created (`id`, `name`, `email`, `role`, `created_at`) | 400 (Duplicate email), 422 (Password <12 chars), 429 (Rate limit: >5/min) |
+| `/auth/me` | GET | Any authenticated | None | Header: `Authorization: Bearer <token>` | 200 OK (`id`, `name`, `email`, `role`, `is_active`) | 401 (Missing/expired/invalid token) |
+| `/users/search` | GET | Any authenticated | None | Query: `q` (name or email prefix) | 200 OK (`list[UserSearchItem]`) | 401 (Unauthorized), 429 (Rate limit: >30/min) |
+| `/documents/upload` | POST | `owner` | Owner (creator) | Multipart form: `file`, `title`, `description`, `category` | 201 Created (`DocumentResponse`) | 401 (Unauth), 403 (Viewer role), 413 (>10MB), 415 (Invalid signature/MIME), 429 (>30/min) |
+| `/documents` | GET | Any authenticated | Caller's scope | Query: `search`, `category`, `owner_search`, `date_from`, `date_to`, `limit`, `offset` | 200 OK (`list[DocumentResponse]`) | 401 (Unauthorized), 422 (Invalid date bounds) |
+| `/documents/{id}` | GET | Any authenticated | Owner OR `read` OR `edit` | Header: `Authorization: Bearer <token>` | 200 OK (`DocumentResponse`) | 401 (Unauthorized), 404 (Unshared/nonexistent) |
+| `/documents/{id}/view` | GET | Any authenticated | Owner OR `read` OR `edit` | Header: `Authorization: Bearer <token>` | 200 OK (Streaming PDF, headers: `inline`, `no-store`) | 401 (Unauthorized), 404 (Unshared/nonexistent) |
+| `/documents/{id}/download` | GET | Any authenticated | Owner (Original) OR `read`/`edit` (Watermarked) | Header: `Authorization: Bearer <token>` | 200 OK (Owner: original file; Shared: watermarked PDF) | 401 (Unauthorized), 404 (Unshared/revoked), 422 (Non-PDF shared download fail-closed) |
+| `/documents/{id}` | PATCH | Any authenticated | Owner OR `edit` | JSON: `title`, `description`, `category` | 200 OK (`DocumentResponse`) | 401 (Unauthorized), 404 (Unshared/read-only caller), 422 (Empty payload) |
+| `/documents/{id}` | DELETE | `owner` | Document Owner only | Header: `Authorization: Bearer <token>` | 204 No Content | 401 (Unauthorized), 404 (Non-owner/unshared) |
+| `/documents/{id}/permissions/{user_id}` | PUT | `owner` | Document Owner only | JSON: `permission_type` (`read` or `edit`) | 200 OK (`PermissionResponse`) | 401 (Unauthorized), 404 (Non-owner, self-grant, target not found) |
+| `/documents/{id}/permissions/{user_id}` | DELETE | `owner` | Document Owner only | Header: `Authorization: Bearer <token>` | 204 No Content | 401 (Unauthorized), 404 (Non-owner, ungranted user) |
+| `/documents/{id}/permissions/bulk` | POST | `owner` | Document Owner only | JSON: `permission_type` (`read` or `edit`) | 200 OK (`BulkPermissionResponse`) | 401 (Unauthorized), 404 (Non-owner), 429 (Rate limit: >30/min) |
+| `/documents/{id}/permissions/bulk` | DELETE | `owner` | Document Owner only | Header: `Authorization: Bearer <token>` | 200 OK (`BulkRevokeResponse`) | 401 (Unauthorized), 404 (Non-owner), 429 (Rate limit: >30/min) |
+| `/documents/{id}/activity` | GET | `owner` | Document Owner only | Header: `Authorization: Bearer <token>` | 200 OK (`DocumentActivityResponse`) | 401 (Unauthorized), 404 (Non-owner) |
+| `/admin/audit-logs` | GET | `admin` | Platform Admin only | Query: `limit`, `offset`, `document_id` | 200 OK (`list[AuditLogResponse]`) | 401 (Unauthorized), 403 (Non-admin caller) |
 
 ---
 
@@ -217,23 +246,28 @@ TrustVault records audit events for:
 - User login attempts (success and denied invalid credentials / deactivated accounts)
 - Document uploads, upload validation failures, and non-owner upload rejections
 - Document metadata read, list, and search queries
-- Document downloads, missing file conditions, and unauthorized download attempts
+- Document in-browser previews (`document_view`) and unauthorized preview attempts
+- Document original downloads by owner and watermarked downloads by shared recipients (`document_download`)
 - Document updates, empty updates, and unauthorized update attempts
 - Document deletions, unauthorized deletion attempts, and preserved audit references
-- Permission grants, self-grant rejections, invalid target user rejections, and unauthorized grant attempts
-- Permission revocations, missing grant rejections, and unauthorized revocation attempts
+- Permission grants, bulk sharing, and unauthorized grant attempts
+- Permission revocations, bulk revocation, and unauthorized revocation attempts
 - Non-admin attempts to access the administrative audit API
 
-All security-sensitive operations persist their business changes and required audit log in the same atomic database transaction. If the audit event cannot be saved, the transaction is rolled back and the business operation is aborted.
+### Traceable Watermarking Policy
+- **Owner Downloads:** Downloads the original bit-for-bit master PDF stored in private storage.
+- **Shared Viewer Downloads:** Generates a separate, viewer-specific watermarked PDF in-memory using `pypdf` and `reportlab`. Applies two subtle diagonal banners per page containing viewer name, email, explicit UTC timestamp, document ID, trace reference, and confidentiality notice. Stored master files remain completely unmodified. Fails closed (HTTP 422) on corrupt or encrypted files.
+- **In-Browser Preview:** Protected authenticated stream with repeated diagonal watermark overlays.
 
 ---
 
 ## 11. Known Limitations and Deliberately Omitted Features
 
-1. **No In-Memory Permission Caching:** Caching permission checks in Redis or JWTs was deliberately omitted. While caching reduces database reads, it introduces a window where revoked users can continue accessing documents until cache expiry. TrustVault prioritizes immediate, real-time revocation over micro-optimization.
-2. **Reverse-Proxy Rate Limiting:** Login rate limiting, IP throttling, and DDoS protection are not implemented inside FastAPI application code; in accordance with cloud-native security patterns, these should be handled at the ingress/reverse proxy layer (e.g. Nginx, Cloudflare).
-3. **Antivirus / Malware Scanning:** Basic file magic number validation, extension allowlisting, and incremental UTF-8 inspection are enforced. Full semantic scanning (e.g. ClamAV daemon) is deferred to production infrastructure.
-4. **Superuser Boundary:** Database triggers protect audit records against application-level compromise, but cannot prevent alterations by a PostgreSQL superuser. Absolute tamper-proofing is honestly disclaimed.
+1. **Attribution Aid, Not Proof:** Watermarking identifies whose account downloaded a file, assisting leak investigation. It does not provide legal proof that the named person personally leaked it (e.g. account theft or shoulder surfing).
+2. **Screenshots & Offline Leakage:** Technical controls cannot prevent external camera photography or OS-level screen capture. Already downloaded files cannot be remotely deleted from client storage.
+3. **No In-Memory Permission Caching:** Caching permission checks in Redis or JWTs was deliberately omitted. While caching reduces database reads, it introduces a window where revoked users can continue accessing documents until cache expiry. TrustVault prioritizes immediate, real-time revocation over micro-optimization.
+4. **Antivirus / Malware Scanning (Not Implemented):** Basic file magic number validation, extension allowlisting, and incremental UTF-8 inspection are enforced. Full semantic scanning (e.g. ClamAV daemon) is deferred to production infrastructure.
+5. **Database Superuser Privilege:** Database triggers protect audit records against application-level compromise, but cannot prevent alterations by a PostgreSQL superuser. Absolute tamper-proofing is honestly disclaimed.
 
 ---
 
@@ -263,19 +297,26 @@ alembic upgrade head
 python seed_demo.py
 
 # 7. Execute automated regression suite
-pytest -v
+pytest -q
+
+# 8. Run Frontend
+cd ../frontend
+npm install
+npm run build
+npm run dev
 ```
 
 ---
 
 ## 13. Snovasys Hiring Challenge Deliverables Status
 
-- [x] **Backend Architecture & Code:** Fully implemented with FastAPI, SQLAlchemy 2.0, PostgreSQL, Alembic, JWT, and Argon2id.
+- [x] **Backend Architecture & Code:** Fully implemented with FastAPI, SQLAlchemy 2.0, PostgreSQL, Alembic, JWT, Argon2id, and ReportLab/PyPDF watermarking.
 - [x] **Ten Required Functionalities:** Fully implemented and verified.
-- [x] **Three Mandatory Security Standards:** Server-side authorization, trustworthy audit logging, and immediate revocation verified with 80 automated tests.
+- [x] **Three Mandatory Security Standards:** Server-side authorization, trustworthy audit logging, and immediate revocation verified with 122 automated tests.
+- [x] **Traceable Watermarking & Shared Downloads:** Fully implemented and verified across preview and download endpoints.
 - [x] **Audit Protections:** PostgreSQL append-only triggers and migration-managed constraints verified.
-- [x] **Evidence-Based Documentation:** `README.md`, `PROMPTS.md` (with real commit links and AI mistake documentation), and `THREATS.md` (full threat matrix) updated.
-- [ ] **Frontend Application:** Ready to begin; backend API is frozen and prepared for UI integration.
+- [x] **Evidence-Based Documentation:** `README.md`, `PROMPTS.md` (with real commit links, AI mistake documentation, and verification entries), and `THREATS.md` (full threat matrix) updated.
+- [x] **Frontend Application:** Fully implemented with React, TypeScript, Vite, Tailwind CSS, Lucide icons, responsive layout, authenticated PDF viewer, and bulk sharing controls.
 - [ ] **Public Git Repository:** Repository will remain **private** until the submission deadline, as strictly mandated by Snovasys instructions.
-- [ ] **Live Deployed URL:** Pending deployment following frontend completion.
-- [ ] **Five-Minute Demo Video & Write-Up:** Scheduled for preparation after frontend completion.
+- [ ] **Live Deployed URL:** Pending production hosting deployment.
+- [ ] **Five-Minute Demo Video & Write-Up:** Scheduled for preparation.

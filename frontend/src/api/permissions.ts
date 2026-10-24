@@ -29,3 +29,9 @@ export async function revokePermissionApi(
   await apiClient.delete(`/documents/${documentId}/permissions/${userId}`);
 }
 
+export {
+  getBulkSummaryApi,
+  bulkGrantPermissionsApi,
+  bulkRevokePermissionsApi,
+} from './documents';
+

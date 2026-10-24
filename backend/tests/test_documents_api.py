@@ -277,11 +277,15 @@ def test_upload_download_grant_and_revoke(
     viewer_token = test_accounts["viewer_token"]
     viewer_id = test_accounts["viewer_id"]
 
-    pdf_content = (
-        b"%PDF-1.4\n"
-        b"1 0 obj << /Type /Catalog >> endobj\n"
-        b"%%EOF\n"
-    )
+    import io
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    c.drawString(100, 700, "Private PDF Specimen")
+    c.showPage()
+    c.save()
+    pdf_content = buf.getvalue()
 
     response = client.post(
         "/documents/upload",
@@ -299,6 +303,7 @@ def test_upload_download_grant_and_revoke(
     assert "storage_key" not in document
     assert len(list(tmp_path.iterdir())) == 1
 
+    # Before grant: unshared recipient is blocked with 404
     response = client.get(
         f"/documents/{document_id}/download",
         headers=auth(viewer_token),
@@ -312,24 +317,43 @@ def test_upload_download_grant_and_revoke(
     )
     assert response.status_code == 200, response.text
 
-    response = client.get(
+    # Recipient with read permission can view in-browser via /view
+    view_response = client.get(
+        f"/documents/{document_id}/view",
+        headers=auth(viewer_token),
+    )
+    assert view_response.status_code == 200
+    assert view_response.content == pdf_content
+    assert "inline" in view_response.headers.get("content-disposition", "")
+
+    # Shared read recipient receives a viewer-specific watermarked copy
+    viewer_dl = client.get(
         f"/documents/{document_id}/download",
         headers=auth(viewer_token),
     )
-    assert response.status_code == 200
-    assert response.content == pdf_content
+    assert viewer_dl.status_code == 200
+    assert "attachment" in viewer_dl.headers.get("content-disposition", "")
+    assert viewer_dl.content != pdf_content
 
+    # Document owner downloads the original file
+    owner_dl = client.get(
+        f"/documents/{document_id}/download",
+        headers=auth(owner_token),
+    )
+    assert owner_dl.status_code == 200
+    assert owner_dl.content == pdf_content
+
+    # Revoke access
     response = client.delete(
         f"/documents/{document_id}/permissions/{viewer_id}",
         headers=auth(owner_token),
     )
     assert response.status_code == 204
-    # Verify the viewer cannot access metadata after revocation.
-    response = client.get(
-        f"/documents/{document_id}",
-        headers=auth(viewer_token),
-    )
-    assert response.status_code == 404
+
+    # Verify the viewer cannot access metadata, download, or view after revocation.
+    assert client.get(f"/documents/{document_id}", headers=auth(viewer_token)).status_code == 404
+    assert client.get(f"/documents/{document_id}/download", headers=auth(viewer_token)).status_code == 404
+    assert client.get(f"/documents/{document_id}/view", headers=auth(viewer_token)).status_code == 404
 
     download_after_revoke = client.get(
         f"/documents/{document_id}/download",

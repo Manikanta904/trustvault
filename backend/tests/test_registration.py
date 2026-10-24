@@ -7,22 +7,29 @@ from app.database import SessionLocal
 from app.main import app
 from app.models import User
 
+from uuid import uuid4
+
 client = TestClient(app)
 
-TEST_EMAIL = "trustvault-registration-test@example.com"
+TEST_EMAIL = f"trustvault-reg-{uuid4().hex[:8]}@example.com"
 TEST_PASSWORD = "SecureTestPass!9382"
 
 
 def remove_test_user():
-    with SessionLocal() as db:
-        db.execute(
-            delete(User).where(User.email == TEST_EMAIL)
-        )
-        db.commit()
+    try:
+        with SessionLocal() as db:
+            db.execute(
+                delete(User).where(User.email == TEST_EMAIL)
+            )
+            db.commit()
+    except Exception:
+        pass
 
 
 @pytest.fixture(autouse=True)
 def clean_registration_test_user():
+    global TEST_EMAIL
+    TEST_EMAIL = f"trustvault-reg-{uuid4().hex[:8]}@example.com"
     remove_test_user()
     yield
     remove_test_user()

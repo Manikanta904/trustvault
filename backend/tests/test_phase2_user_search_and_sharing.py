@@ -214,11 +214,20 @@ def test_document_permissions_listing_and_grant_workflow(sharing_test_env):
     bob_id = sharing_test_env["bob"]["id"]
     bob_token = sharing_test_env["bob"]["token"]
 
+    import io
+    from reportlab.pdfgen import canvas
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    c.drawString(100, 700, "Project Alpha Plan")
+    c.showPage()
+    c.save()
+    pdf_bytes = buf.getvalue()
+
     # 1. Alice uploads document
     upload_res = client.post(
         "/documents/upload",
         headers=auth_header(alice_token),
-        files={"file": ("project_plan.pdf", b"%PDF-1.4 Project Plan", "application/pdf")},
+        files={"file": ("project_plan.pdf", pdf_bytes, "application/pdf")},
         data={"title": "Project Alpha Plan"},
     )
     assert upload_res.status_code == 201
@@ -246,9 +255,16 @@ def test_document_permissions_listing_and_grant_workflow(sharing_test_env):
         assert bob_db is not None
         assert bob_db.role == "owner"
 
-    # 5. Verify Bob can read metadata and download
+    # 5. Verify Bob can read metadata and view in-browser, and download watermarked copy
     assert client.get(f"/documents/{doc_id}", headers=auth_header(bob_token)).status_code == 200
-    assert client.get(f"/documents/{doc_id}/download", headers=auth_header(bob_token)).status_code == 200
+    assert client.get(f"/documents/{doc_id}/view", headers=auth_header(bob_token)).status_code == 200
+    bob_dl = client.get(f"/documents/{doc_id}/download", headers=auth_header(bob_token))
+    assert bob_dl.status_code == 200
+    assert bob_dl.content != pdf_bytes
+    assert "attachment" in bob_dl.headers.get("content-disposition", "")
+    alice_dl = client.get(f"/documents/{doc_id}/download", headers=auth_header(alice_token))
+    assert alice_dl.status_code == 200
+    assert alice_dl.content == pdf_bytes
 
     # 6. Bob cannot edit with read-only grant
     assert client.patch(f"/documents/{doc_id}", headers=auth_header(bob_token), json={"title": "Hacked"}).status_code == 404

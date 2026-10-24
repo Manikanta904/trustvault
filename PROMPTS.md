@@ -160,3 +160,33 @@ The following context files and standard instructions were reused across develop
     - `tests/test_documents_api.py`: 31 passed (including `test_document_delete_is_not_saved_when_audit_fails` and `test_document_download_fails_when_audit_write_fails`)
     - `tests/test_file_storage.py`: 7 passed
     - `tests/test_registration.py`: 7 passed
+
+---
+
+## Entry 7 — 2026-10-24 — Security Hardening, Traceable Watermarking, Shared Downloads, and UI Fixes
+
+- **AI tools used:** Antigravity IDE; PowerShell terminal, Python venv, Vite/ESLint runtime.
+- **Objective:** Fix document repository UI (owner/shared-by identity, remove duplicate View action, owner name/email search filters), secure shared-document downloads (owner downloads original, shared read/edit download viewer-specific watermarked copies, unshared/revoked users get 404), implement traceable PDF watermarking in-browser and server-side, fail closed on malformed/encrypted files, add rate limiting, add owner activity and download history visibility, and create comprehensive automated test suite.
+- **Prompt / request (summary of the actual work):** Continue work on TrustVault for the Snovasys Fresher Hiring Challenge 2026. Inspect before editing without resetting the database or dropping tables. Fix the document repository UI by adding a `Shared by` column showing owner name/email, removing duplicate View icons, and improving document filters with owner name/email search. Implement shared document downloads where owners download original files, shared viewers download watermarked copies, and unauthorized users are denied. Implement traceable server-side PDF watermarking with viewer identity, UTC timestamp, and trace reference. Extend audit logging and provide owner activity/notification of shared downloads. Add upload path sanitization and sliding-window rate limiting. Update `THREATS.md`, `PROMPTS.md`, and `README.md`.
+- **What was specifically wrong or incomplete (and what was independently checked):**
+  1. **Shared download denial:** In Phase 2, `download_document` was restricted to owner-only (returning 404 for shared viewers). The challenge explicitly requires usable document sharing where shared viewers can download files. Removing download for shared viewers broke document usability.
+  2. **Duplicate View actions in UI:** The document repository table rendered two duplicate eye icons for every document row, one linking to details and another linking to the viewer, cluttering the UI.
+  3. **Missing owner identity in repository:** Shared with Me and All Accessible views did not display who owned or shared each document.
+  4. **Frontend watermark only:** A frontend-only CSS watermark overlay is trivial to bypass or strip using developer tools or direct curl requests. Downloaded files also lacked physical watermarks.
+  5. **PostgreSQL append-only trigger interaction with test user cleanup:** In PostgreSQL, the `prevent_audit_log_mutation()` trigger prevents ANY `UPDATE` or `DELETE` on `audit_logs`. When test fixtures attempted to delete test users in teardown, PostgreSQL executed foreign-key actions (`ON DELETE SET NULL`) which triggered an update on `audit_logs`, causing tests to fail with trigger errors.
+  6. **Brute-force and enumeration exposure:** Authentication, user search, and sensitive document operations lacked rate limiting at the application layer.
+- **Correction / what I did instead:**
+  1. **Download policy and server-side watermarking:** Implemented `app/watermark.py` using `pypdf` (6.21.2) and `reportlab` (5.1.0). Overlays two subtle diagonal banners per page with authenticated viewer's name, email, explicit UTC timestamp, document ID, trace reference, and confidentiality notice. Stored original master PDFs remain completely unmodified. Owner downloads the original file; shared users receive the generated watermarked copy; unauthorized or revoked users receive HTTP 404; non-PDF shared downloads fail closed with HTTP 422.
+  2. **Frontend UI clean-up:** Updated `DocumentsPage.tsx`, `SharedDocumentsPage.tsx`, and `DocumentDetailsPage.tsx`: added `Shared by / Owner` column displaying owner name and email; removed the duplicate View icon keeping a single clean View action; enabled downloads for shared users; restricted edit buttons to owners and editors; replaced numeric owner ID filter with autocomplete owner name/email search.
+  3. **In-browser preview watermark:** Updated `DocumentViewer.tsx` to display repeated diagonal watermark banners with viewer identity, UTC timestamp, and document ID.
+  4. **Owner activity & download history:** Implemented `GET /documents/{document_id}/activity` in `app/routers/documents.py`, which resolves actor display name, email, and action from `audit_logs` for document owners. Non-owners receive HTTP 404. Added activity panel in `DocumentDetailsPage.tsx`.
+  5. **Sliding-window rate limiter:** Created thread-safe `SlidingWindowRateLimiter` in `app/rate_limiter.py` configured for login (10/min), registration (5/min), user search (30/min), and sensitive document operations (30/min).
+  6. **Upload sanitization:** Hardened `save_upload` in `app/file_storage.py` to sanitize path traversal sequences (`../`, null bytes) from uploaded filenames before storing metadata.
+  7. **Comprehensive automated tests:** Created `tests/test_phase4_watermark_and_downloads.py` with 18 automated tests verifying owner downloads, shared watermarked downloads, multi-page watermarking, viewer attribution, original file checksum preservation, immediate revocation blocking, rate limiting, and owner search filtering.
+- **Commit link:** `[Pending manual commit - uncommitted milestone]` (Local changes ready for user review and commit).
+- **Verification performed:**
+  - Complete backend test suite: `.venv\Scripts\pytest -q` -> **122 passed, 25 warnings in 30.44s**.
+  - Frontend production build: `npm run build` -> **Exit code 0** (built in 553ms).
+  - Frontend lint: `npm run lint` -> **Exit code 0** (0 errors, 0 warnings).
+  - Database schema check: `alembic current` -> `d7a2c9e4b105 (head)` (database intact, no schema reset, no migrations needed).
+

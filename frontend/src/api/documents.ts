@@ -1,8 +1,13 @@
 import { apiClient } from './client';
 import type {
+  BulkPermissionResponse,
+  BulkRevokeResponse,
+  BulkSummaryResponse,
+  DocumentActivityResponse,
   DocumentFilterParams,
   DocumentItem,
   DocumentUpdatePayload,
+  PermissionType,
 } from '../types';
 
 export interface UploadMetadata {
@@ -15,6 +20,7 @@ export async function listDocumentsApi(params?: DocumentFilterParams): Promise<D
   const queryParams: Record<string, string | number> = {};
   if (params?.search) queryParams.search = params.search;
   if (params?.owner_id) queryParams.owner_id = params.owner_id;
+  if (params?.owner_search) queryParams.owner_search = params.owner_search;
   if (params?.category) queryParams.category = params.category;
   if (params?.date_from) queryParams.date_from = params.date_from;
   if (params?.date_to) queryParams.date_to = params.date_to;
@@ -93,4 +99,47 @@ export async function downloadDocumentApi(id: number, fallbackFilename = 'docume
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
+}
+
+export async function viewDocumentApi(id: number): Promise<Blob> {
+  const response = await apiClient.get<Blob>(`/documents/${id}/view`, {
+    responseType: 'blob',
+  });
+  return response.data;
+}
+
+export async function getBulkSummaryApi(documentId: number): Promise<BulkSummaryResponse> {
+  const response = await apiClient.get<BulkSummaryResponse>(
+    `/documents/${documentId}/permissions/bulk-summary`
+  );
+  return response.data;
+}
+
+export async function bulkGrantPermissionsApi(
+  documentId: number,
+  permissionType: PermissionType
+): Promise<BulkPermissionResponse> {
+  const response = await apiClient.post<BulkPermissionResponse>(
+    `/documents/${documentId}/permissions/bulk`,
+    { permission_type: permissionType }
+  );
+  return response.data;
+}
+
+export async function bulkRevokePermissionsApi(
+  documentId: number
+): Promise<BulkRevokeResponse> {
+  const response = await apiClient.delete<BulkRevokeResponse>(
+    `/documents/${documentId}/permissions/bulk`
+  );
+  return response.data;
+}
+
+export async function getDocumentActivityApi(
+  documentId: number
+): Promise<DocumentActivityResponse> {
+  const response = await apiClient.get<DocumentActivityResponse>(
+    `/documents/${documentId}/activity`
+  );
+  return response.data;
 }

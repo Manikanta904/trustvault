@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
 from app.database import get_db
 from app.models import User
+from app.rate_limiter import get_client_ip, user_search_rate_limiter
 from app.schemas import UserSearchResult
 from app.security import get_current_user
 
@@ -13,6 +14,7 @@ router = APIRouter(prefix="/users", tags=["Users"])
 
 @router.get("/search", response_model=list[UserSearchResult])
 def search_users(
+    request: Request,
     q: str = Query(
         ...,
         min_length=1,
@@ -36,6 +38,20 @@ def search_users(
     - Excludes the calling user (cannot grant access to self).
     - Returns minimal fields (id, name, email, role). Never exposes password hashes or tokens.
     """
+    rate_key = f"user_{user.id}"
+    try:
+        user_search_rate_limiter.check(rate_key)
+    except HTTPException as exc:
+        record_audit(
+            db=db,
+            actor=user,
+            action="rate_limit_exceeded",
+            outcome="denied",
+            details="User search rate limit exceeded",
+        )
+        db.commit()
+        raise exc
+
     if user.role not in {"owner", "admin"}:
         record_audit(
             db=db,

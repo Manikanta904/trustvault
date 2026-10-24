@@ -1,7 +1,7 @@
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -18,6 +18,11 @@ from sqlalchemy.exc import IntegrityError
 from app.schemas import UserRegister
 from app.security import hash_password
 from app.audit import record_audit
+from app.rate_limiter import (
+    get_client_ip,
+    login_rate_limiter,
+    register_rate_limiter,
+)
 
 from app.routers.admin import router as admin_router
 from app.routers.users import router as users_router
@@ -61,8 +66,23 @@ class TokenResponse(BaseModel):
 )
 def register(
     payload: UserRegister,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    client_ip = get_client_ip(request)
+    try:
+        register_rate_limiter.check(client_ip)
+    except HTTPException as exc:
+        record_audit(
+            db=db,
+            actor=None,
+            action="rate_limit_exceeded",
+            outcome="denied",
+            details=f"Registration rate limit exceeded from {client_ip}",
+        )
+        db.commit()
+        raise exc
+
     email = str(payload.email).strip().lower()
 
     existing_user = db.scalar(
@@ -104,9 +124,24 @@ def health():
 
 @app.post("/auth/login", response_model=TokenResponse)
 def login(
+    request: Request,
     form: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
+    client_ip = get_client_ip(request)
+    try:
+        login_rate_limiter.check(client_ip)
+    except HTTPException as exc:
+        record_audit(
+            db=db,
+            actor=None,
+            action="rate_limit_exceeded",
+            outcome="denied",
+            details=f"Login rate limit exceeded from {client_ip}",
+        )
+        db.commit()
+        raise exc
+
     email = form.username.strip().lower()
 
     user = db.scalar(
@@ -135,6 +170,15 @@ def login(
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    record_audit(
+        db=db,
+        actor=user,
+        action="login",
+        outcome="success",
+        details="User authenticated successfully",
+    )
+    db.commit()
 
     return {
         "access_token": create_access_token(user),

@@ -392,7 +392,15 @@ def test_immediate_revocation_lifecycle(phase1_test_env):
     viewer_token = phase1_test_env["viewer"]["token"]
     viewer_id = phase1_test_env["viewer"]["id"]
 
-    raw_file_bytes = b"%PDF-1.4\nImmediate Revocation Contract Text\n%%EOF"
+    import io
+    from reportlab.pdfgen import canvas
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    c.drawString(100, 700, "Immediate Revocation Contract Text")
+    c.showPage()
+    c.save()
+    raw_file_bytes = buf.getvalue()
+
     upload_res = client.post(
         "/documents/upload",
         headers=auth_header(owner_b_token),
@@ -414,14 +422,27 @@ def test_immediate_revocation_lifecycle(phase1_test_env):
     )
     assert grant_res.status_code == 200
 
-    # 3. Viewer immediately has read and download access
+    # 3. Viewer immediately has read/view access
     read_res = client.get(f"/documents/{doc_id}", headers=auth_header(viewer_token))
     assert read_res.status_code == 200
     assert read_res.json()["title"] == "Customer Service Agreement"
 
+    # In-browser viewing works for viewer
+    view_res = client.get(f"/documents/{doc_id}/view", headers=auth_header(viewer_token))
+    assert view_res.status_code == 200
+    assert view_res.content == raw_file_bytes
+    assert "inline" in view_res.headers.get("content-disposition", "")
+
+    # Shared read viewer downloads a viewer-specific watermarked copy
     download_res = client.get(f"/documents/{doc_id}/download", headers=auth_header(viewer_token))
     assert download_res.status_code == 200
-    assert download_res.content == raw_file_bytes
+    assert download_res.content != raw_file_bytes
+    assert "attachment" in download_res.headers.get("content-disposition", "")
+
+    # Owner can download original file
+    owner_dl_res = client.get(f"/documents/{doc_id}/download", headers=auth_header(owner_b_token))
+    assert owner_dl_res.status_code == 200
+    assert owner_dl_res.content == raw_file_bytes
 
     list_res = client.get("/documents", headers=auth_header(viewer_token))
     assert doc_id in {item["id"] for item in list_res.json()}

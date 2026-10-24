@@ -6,6 +6,7 @@ import {
   deleteDocumentApi,
 } from '../api/documents';
 import { extractErrorMessage } from '../api/client';
+import axios from 'axios';
 import {
   Search,
   Filter,
@@ -41,6 +42,7 @@ export const DocumentsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'all' | 'owned' | 'shared'>('all');
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
+  const [ownerSearch, setOwnerSearch] = useState('');
   const [ownerId, setOwnerId] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -64,6 +66,7 @@ export const DocumentsPage: React.FC = () => {
 
     if (search.trim()) params.search = search.trim();
     if (category.trim()) params.category = category.trim();
+    if (ownerSearch.trim()) params.owner_search = ownerSearch.trim();
     if (ownerId.trim() && parseInt(ownerId, 10) > 0) {
       params.owner_id = parseInt(ownerId, 10);
     }
@@ -78,7 +81,7 @@ export const DocumentsPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [search, category, ownerId, dateFrom, dateTo]);
+  }, [search, category, ownerSearch, ownerId, dateFrom, dateTo]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -92,9 +95,17 @@ export const DocumentsPage: React.FC = () => {
     setActionSuccess(null);
     try {
       await downloadDocumentApi(doc.id, doc.original_filename);
-      setActionSuccess(`Downloaded "${doc.title}".`);
-    } catch (err) {
-      setError(extractErrorMessage(err, 'Download denied or file missing.'));
+      setActionSuccess(
+        doc.owner_id === user?.id
+          ? `Downloaded original "${doc.title}".`
+          : `Downloaded watermarked copy of "${doc.title}".`
+      );
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && (err.response?.status === 404 || err.response?.status === 403)) {
+        setError('Download denied: You are not authorized to download this document.');
+      } else {
+        setError(extractErrorMessage(err, 'Download failed.'));
+      }
     } finally {
       setDownloadingId(null);
     }
@@ -114,13 +125,14 @@ export const DocumentsPage: React.FC = () => {
   const clearFilters = () => {
     setSearch('');
     setCategory('');
+    setOwnerSearch('');
     setOwnerId('');
     setDateFrom('');
     setDateTo('');
   };
 
   const hasActiveFilters = Boolean(
-    search.trim() || category.trim() || ownerId.trim() || dateFrom || dateTo
+    search.trim() || category.trim() || ownerSearch.trim() || ownerId.trim() || dateFrom || dateTo
   );
 
   const displayedDocs = documents.filter((d) => {
@@ -287,14 +299,13 @@ export const DocumentsPage: React.FC = () => {
 
             <div>
               <label className="block text-[11px] font-semibold text-slate-600 uppercase mb-1">
-                Owner User ID
+                Owner Name or Email
               </label>
               <input
-                type="number"
-                min="1"
-                value={ownerId}
-                onChange={(e) => setOwnerId(e.target.value)}
-                placeholder="e.g. 1"
+                type="text"
+                value={ownerSearch}
+                onChange={(e) => setOwnerSearch(e.target.value)}
+                placeholder="e.g. Alice or alice@example.com"
                 className="block w-full px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white text-slate-900"
               />
             </div>
@@ -384,6 +395,7 @@ export const DocumentsPage: React.FC = () => {
                 <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
                   <th className="px-6 py-3">Document Title</th>
                   <th className="px-6 py-3">Category</th>
+                  <th className="px-6 py-3">Shared by / Owner</th>
                   <th className="px-6 py-3">Size</th>
                   <th className="px-6 py-3">Created</th>
                   <th className="px-6 py-3">Ownership</th>
@@ -393,6 +405,7 @@ export const DocumentsPage: React.FC = () => {
               <tbody className="divide-y divide-slate-100 text-sm">
                 {displayedDocs.map((doc) => {
                   const isOwner = doc.owner_id === user?.id;
+                  const canEdit = isOwner || doc.user_permission === 'edit';
                   return (
                     <tr key={doc.id} className="hover:bg-slate-50/70 transition-colors">
                       <td className="px-6 py-4">
@@ -415,6 +428,14 @@ export const DocumentsPage: React.FC = () => {
                           <span className="text-xs text-slate-400">—</span>
                         )}
                       </td>
+                      <td className="px-6 py-4">
+                        <div className="text-xs font-medium text-slate-800">
+                          {isOwner ? 'You' : (doc.owner_name || `User #${doc.owner_id}`)}
+                        </div>
+                        <div className="text-[11px] text-slate-400 truncate max-w-[150px]">
+                          {isOwner ? user?.email : (doc.owner_email || '')}
+                        </div>
+                      </td>
                       <td className="px-6 py-4 text-xs font-mono text-slate-600">
                         {formatFileSize(doc.size_bytes)}
                       </td>
@@ -427,17 +448,30 @@ export const DocumentsPage: React.FC = () => {
                             Owner
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800">
-                            Shared with You
+                          <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                            doc.user_permission === 'edit'
+                              ? 'bg-purple-100 text-purple-800'
+                              : 'bg-emerald-100 text-emerald-800'
+                          }`}>
+                            {doc.user_permission === 'edit' ? 'Shared (Editor)' : 'Shared (Viewer)'}
                           </span>
                         )}
                       </td>
                       <td className="px-6 py-4 text-right space-x-1.5 whitespace-nowrap">
-                        {/* Download button */}
+                        {/* Single clear View action */}
+                        <Link
+                          to={`/documents/${doc.id}`}
+                          title="View Document"
+                          className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center"
+                        >
+                          <Eye className="w-4 h-4" />
+                        </Link>
+
+                        {/* Download: Owner gets original; shared recipient gets watermarked copy */}
                         <button
                           onClick={() => handleDownload(doc)}
                           disabled={downloadingId === doc.id}
-                          title="Download Document"
+                          title={isOwner ? "Download Original File" : "Download Watermarked PDF"}
                           className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center"
                         >
                           <Download className="w-4 h-4" />
@@ -454,14 +488,16 @@ export const DocumentsPage: React.FC = () => {
                           </button>
                         )}
 
-                        {/* Edit metadata (Owner or editor) */}
-                        <button
-                          onClick={() => setEditingDoc(doc)}
-                          title="Edit Metadata"
-                          className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center"
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
+                        {/* Edit metadata (Owner or editor only) */}
+                        {canEdit && (
+                          <button
+                            onClick={() => setEditingDoc(doc)}
+                            title="Edit Metadata"
+                            className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                        )}
 
                         {/* Delete document (Owner only) */}
                         {isOwner && (
@@ -473,15 +509,6 @@ export const DocumentsPage: React.FC = () => {
                             <Trash2 className="w-4 h-4" />
                           </button>
                         )}
-
-                        {/* Details View */}
-                        <Link
-                          to={`/documents/${doc.id}`}
-                          title="View Details"
-                          className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors inline-flex items-center"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </Link>
                       </td>
                     </tr>
                   );

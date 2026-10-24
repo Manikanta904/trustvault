@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from pydantic import EmailStr
+from datetime import datetime
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 class UserRegister(BaseModel):
     name: str = Field(min_length=2, max_length=100)
@@ -18,6 +18,8 @@ class UserRegister(BaseModel):
     @classmethod
     def normalize_email(cls, value: EmailStr) -> str:
         return str(value).strip().lower()
+
+
 class DocumentCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=5000)
@@ -36,10 +38,6 @@ class DocumentUpdate(BaseModel):
     category: str | None = Field(default=None, max_length=100)
 
 
-from datetime import datetime
-
-# Keep the other imports and schemas.
-
 class DocumentResponse(BaseModel):
     id: int
     title: str
@@ -49,10 +47,31 @@ class DocumentResponse(BaseModel):
     content_type: str
     size_bytes: int
     owner_id: int
+    owner_name: str | None = None
+    owner_email: str | None = None
+    user_permission: str | None = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DocumentActivityItem(BaseModel):
+    id: int
+    actor_id: int | None
+    actor_name: str | None = None
+    actor_email: str | None = None
+    action: str
+    outcome: str
+    details: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DocumentActivityResponse(BaseModel):
+    document_id: int
+    items: list[DocumentActivityItem]
 
 class PermissionGrantRequest(BaseModel):
     permission_type: str = Field(
@@ -85,3 +104,28 @@ class DocumentPermissionDetailResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class BulkPermissionGrantRequest(BaseModel):
+    permission_type: str = Field(
+        pattern="^(read|edit)$",
+        description="Permission level to grant to all active employees: 'read' or 'edit'",
+    )
+
+
+class BulkPermissionResponse(BaseModel):
+    document_id: int
+    permission_type: str
+    affected_count: int
+
+
+class BulkSummaryResponse(BaseModel):
+    document_id: int
+    eligible_count: int
+    new_grant_count: int
+    existing_grant_count: int
+
+
+class BulkRevokeResponse(BaseModel):
+    document_id: int
+    revoked_count: int
