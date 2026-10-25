@@ -132,7 +132,7 @@ def create_document(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    if user.role != "owner":
+    if user.role not in {"owner", "admin"}:
         record_audit(
             db,
             user,
@@ -963,8 +963,8 @@ async def upload_document(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # Only owners may create new documents.
-    if user.role != "owner":
+    # Only owners and admins may create new documents.
+    if user.role not in {"owner", "admin"}:
         record_audit(
             db, user,
             action="document_upload",

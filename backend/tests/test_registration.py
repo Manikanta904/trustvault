@@ -87,6 +87,31 @@ def test_duplicate_email_is_rejected():
             "password": "short",
         },
         {
+            "name": "Valid User",
+            "email": TEST_EMAIL,
+            "password": "Aa1!s",  # too short (< 8 chars)
+        },
+        {
+            "name": "Valid User",
+            "email": TEST_EMAIL,
+            "password": "lowercaseonly1!",  # missing uppercase
+        },
+        {
+            "name": "Valid User",
+            "email": TEST_EMAIL,
+            "password": "UPPERCASEONLY1!",  # missing lowercase
+        },
+        {
+            "name": "Valid User",
+            "email": TEST_EMAIL,
+            "password": "NoDigitsInPassword!",  # missing digit
+        },
+        {
+            "name": "Valid User",
+            "email": TEST_EMAIL,
+            "password": "NoSpecialChar1234",  # missing special char
+        },
+        {
             "name": "   ",
             "email": TEST_EMAIL,
             "password": TEST_PASSWORD,

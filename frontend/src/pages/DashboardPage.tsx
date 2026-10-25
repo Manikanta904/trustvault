@@ -154,7 +154,7 @@ export const DashboardPage: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-3">
-          {user?.role === 'owner' && (
+          {(user?.role === 'owner' || user?.role === 'admin') && (
             <button
               onClick={() => setIsUploadOpen(true)}
               className="inline-flex items-center px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-colors cursor-pointer"
@@ -413,7 +413,7 @@ export const DashboardPage: React.FC = () => {
             <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
               You haven't uploaded any documents yet and no documents have been shared with your account.
             </p>
-            {user?.role === 'owner' && (
+            {(user?.role === 'owner' || user?.role === 'admin') && (
               <button
                 onClick={() => setIsUploadOpen(true)}
                 className="mt-4 inline-flex items-center px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors cursor-pointer"

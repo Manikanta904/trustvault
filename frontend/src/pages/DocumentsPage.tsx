@@ -168,10 +168,10 @@ export const DocumentsPage: React.FC = () => {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
 
-          {user?.role === 'owner' && (
+          {(user?.role === 'owner' || user?.role === 'admin') && (
             <button
               onClick={() => setIsUploadOpen(true)}
-              className="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-colors"
+              className="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-colors cursor-pointer"
             >
               <UploadCloud className="w-4 h-4 mr-2" />
               Upload Document
@@ -377,10 +377,10 @@ export const DocumentsPage: React.FC = () => {
                 Clear Filters
               </button>
             ) : (
-              user?.role === 'owner' && (
+              (user?.role === 'owner' || user?.role === 'admin') && (
                 <button
                   onClick={() => setIsUploadOpen(true)}
-                  className="mt-4 inline-flex items-center px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors"
+                  className="mt-4 inline-flex items-center px-3.5 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors cursor-pointer"
                 >
                   <UploadCloud className="w-4 h-4 mr-1.5" />
                   Upload Document
