@@ -1,8 +1,30 @@
 # TrustVault
 
-TrustVault is a secure, role-based document sharing and auditing platform developed for the Snovasys Fresher Hiring Challenge 2026. The backend is built with FastAPI, PostgreSQL, SQLAlchemy 2.0, Alembic, JWT authentication, Argon2id password hashing, and private file storage.
+TrustVault is a secure, role-based document sharing and auditing platform developed for the Snovasys Fresher Hiring Challenge 2026. The backend is built with FastAPI, PostgreSQL, SQLAlchemy 2.0, Alembic, JWT authentication, Argon2id password hashing, private file storage, and dynamic traceable PDF watermarking.
+
+- **Live Production Frontend:** [https://trustvault-ui-obkw.onrender.com](https://trustvault-ui-obkw.onrender.com)
+- **Live Production Backend:** [https://trustvault-back.onrender.com](https://trustvault-back.onrender.com)
+- **Interactive Swagger UI:** [https://trustvault-back.onrender.com/docs](https://trustvault-back.onrender.com/docs)
+- **Health Verification:** [https://trustvault-back.onrender.com/health](https://trustvault-back.onrender.com/health)
 
 ---
+
+## Technical Documentation Index (`docs/`)
+
+TrustVault includes comprehensive, evidence-based technical documentation in `docs/`:
+
+| Document | Primary Focus & Coverage |
+|---|---|
+| [**`ARCHITECTURE.md`**](file:///d:/projects/trustvault/docs/ARCHITECTURE.md) | High-level system architecture, technology stack, Mermaid data flow diagrams, and subsystem breakdown |
+| [**`API-SECURITY.md`**](file:///d:/projects/trustvault/docs/API-SECURITY.md) | Authentication cryptography, JWT claims, IDOR/enumeration defenses, file validation, and audit triggers |
+| [**`API.md`**](file:///d:/projects/trustvault/docs/API.md) | Exhaustive REST API specification for all 19 active endpoints with request/response schemas |
+| [**`DATABASE.md`**](file:///d:/projects/trustvault/docs/DATABASE.md) | PostgreSQL schema definitions, Mermaid ER diagram, Alembic migrations, and append-only triggers |
+| [**`DEPLOYMENT.md`**](file:///d:/projects/trustvault/docs/DEPLOYMENT.md) | Clean-clone local setup guide, environment variables, Render hosting details, and CORS analysis |
+| [**`SECURITY-TESTING.md`**](file:///d:/projects/trustvault/docs/SECURITY-TESTING.md) | Automated test suite layout, test isolation fixtures, and breakdown of all 135 passed tests |
+| [**`PERMISSIONS.md`**](file:///d:/projects/trustvault/docs/PERMISSIONS.md) | Discretionary access control (DAC), role behaviors, Mermaid permission evaluation flow, and denial matrix |
+| [**`LIMITATIONS.md`**](file:///d:/projects/trustvault/docs/LIMITATIONS.md) | Explicit disclosure of security boundaries, hardware limitations, watermarking limits, and unverified areas |
+| [**`DEMO.md`**](file:///d:/projects/trustvault/docs/DEMO.md) | 5-minute technical demonstration script with timestamp breakdown and safe account provisioning |
+| [**`WRITEUP.md`**](file:///d:/projects/trustvault/docs/WRITEUP.md) | Formal hiring challenge submission write-up, engineering trade-offs, and genuine AI correction log |
 
 ## 1. Architecture and Security Principles
 
@@ -186,8 +208,9 @@ pytest tests/test_file_storage.py
 pytest tests/test_audit_integrity.py
 pytest tests/test_registration.py
 pytest tests/test_phase4_watermark_and_downloads.py
+pytest tests/test_admin_upload_and_sharing.py
 
-# Run complete regression suite (122 tests)
+# Run complete regression suite (135 tests)
 pytest -q
 ```
 
@@ -200,8 +223,8 @@ pytest -q
 | Register Account (`POST /auth/register`) | Allowed (creates `owner`) | Allowed | Allowed | Allowed | Allowed | Allowed |
 | Login (`POST /auth/login`) | Allowed | Allowed | Allowed | Allowed | Allowed | Allowed |
 | Current User Info (`GET /auth/me`) | 401 | Allowed | Allowed | Allowed | Allowed | Allowed |
-| Upload Document (`POST /documents/upload`) | 401 | 403 (Denied) | 403 (Denied) | 403 (Denied) | Allowed | 403 (Denied) |
-| Create Metadata (`POST /documents`) | 401 | 403 (Denied) | 403 (Denied) | 403 (Denied) | Allowed | 403 (Denied) |
+| Upload Document (`POST /documents/upload`) | 401 | 403 (Denied) | 403 (Denied) | 403 (Denied) | Allowed | Allowed (PDF) |
+| Create Metadata (`POST /documents`) | 401 | 403 (Denied) | 403 (Denied) | 403 (Denied) | Allowed | Allowed |
 | List Documents (`GET /documents`) | 401 | Visible grants only | Visible grants only | Visible grants only | Own + shared | Own + shared only |
 | Read Metadata (`GET /documents/{id}`) | 401 | 404 (Denied) | Allowed | Allowed | Allowed | 404 (Denied) |
 | In-Browser Preview (`GET /documents/{id}/view`) | 401 | 404 (Denied) | Allowed (Watermarked) | Allowed (Watermarked) | Allowed | 404 (Denied) |
@@ -221,10 +244,10 @@ pytest -q
 | Endpoint | Method | Required Role | Document Permission | Request Format | Success Response | Expected Failure Behavior |
 |---|---|---|---|---|---|---|
 | `/auth/login` | POST | Public | None | `application/x-www-form-urlencoded` (`username`, `password`) | 200 OK (`access_token`, `token_type`, `user`) | 400 (Bad input), 401 (Invalid credentials/inactive), 429 (Rate limit: >10/min) |
-| `/auth/register` | POST | Public | None | JSON (`name`, `email`, `password`) | 201 Created (`id`, `name`, `email`, `role`, `created_at`) | 400 (Duplicate email), 422 (Password <12 chars), 429 (Rate limit: >5/min) |
+| `/auth/register` | POST | Public | None | JSON (`name`, `email`, `password`) | 201 Created (`id`, `name`, `email`, `role`, `created_at`) | 400 (Duplicate email), 422 (Password <8 chars, missing upper/lower/digit/special), 429 (Rate limit: >5/min) |
 | `/auth/me` | GET | Any authenticated | None | Header: `Authorization: Bearer <token>` | 200 OK (`id`, `name`, `email`, `role`, `is_active`) | 401 (Missing/expired/invalid token) |
-| `/users/search` | GET | Any authenticated | None | Query: `q` (name or email prefix) | 200 OK (`list[UserSearchItem]`) | 401 (Unauthorized), 429 (Rate limit: >30/min) |
-| `/documents/upload` | POST | `owner` | Owner (creator) | Multipart form: `file`, `title`, `description`, `category` | 201 Created (`DocumentResponse`) | 401 (Unauth), 403 (Viewer role), 413 (>10MB), 415 (Invalid signature/MIME), 429 (>30/min) |
+| `/users/search` | GET | `owner`, `admin` | None | Query: `q` (name or email prefix) | 200 OK (`list[UserSearchItem]`) | 401 (Unauthorized), 403 (Viewer role), 429 (Rate limit: >30/min) |
+| `/documents/upload` | POST | `owner`, `admin` | Owner (creator) | Multipart form: `file`, `title`, `description`, `category` | 201 Created (`DocumentResponse`) | 401 (Unauth), 403 (Viewer role), 413 (>10MB), 415 (Invalid signature/MIME), 429 (>30/min) |
 | `/documents` | GET | Any authenticated | Caller's scope | Query: `search`, `category`, `owner_search`, `date_from`, `date_to`, `limit`, `offset` | 200 OK (`list[DocumentResponse]`) | 401 (Unauthorized), 422 (Invalid date bounds) |
 | `/documents/{id}` | GET | Any authenticated | Owner OR `read` OR `edit` | Header: `Authorization: Bearer <token>` | 200 OK (`DocumentResponse`) | 401 (Unauthorized), 404 (Unshared/nonexistent) |
 | `/documents/{id}/view` | GET | Any authenticated | Owner OR `read` OR `edit` | Header: `Authorization: Bearer <token>` | 200 OK (Streaming PDF, headers: `inline`, `no-store`) | 401 (Unauthorized), 404 (Unshared/nonexistent) |
@@ -312,11 +335,13 @@ npm run dev
 
 - [x] **Backend Architecture & Code:** Fully implemented with FastAPI, SQLAlchemy 2.0, PostgreSQL, Alembic, JWT, Argon2id, and ReportLab/PyPDF watermarking.
 - [x] **Ten Required Functionalities:** Fully implemented and verified.
-- [x] **Three Mandatory Security Standards:** Server-side authorization, trustworthy audit logging, and immediate revocation verified with 122 automated tests.
+- [x] **Three Mandatory Security Standards:** Server-side authorization, trustworthy audit logging, and immediate revocation verified with 135 automated tests.
 - [x] **Traceable Watermarking & Shared Downloads:** Fully implemented and verified across preview and download endpoints.
 - [x] **Audit Protections:** PostgreSQL append-only triggers and migration-managed constraints verified.
-- [x] **Evidence-Based Documentation:** `README.md`, `PROMPTS.md` (with real commit links, AI mistake documentation, and verification entries), and `THREATS.md` (full threat matrix) updated.
-- [x] **Frontend Application:** Fully implemented with React, TypeScript, Vite, Tailwind CSS, Lucide icons, responsive layout, authenticated PDF viewer, and bulk sharing controls.
-- [ ] **Public Git Repository:** Repository will remain **private** until the submission deadline, as strictly mandated by Snovasys instructions.
-- [ ] **Live Deployed URL:** Pending production hosting deployment.
-- [ ] **Five-Minute Demo Video & Write-Up:** Scheduled for preparation.
+- [x] **Evidence-Based Documentation:** 10 dedicated documents in `docs/`, along with `README.md`, `PROMPTS.md` (with real commit links and AI correction logs), and `THREATS.md` (full threat matrix).
+- [x] **Frontend Application:** Fully implemented with React 19, TypeScript, Vite, Tailwind CSS, Lucide icons, responsive layout, purple shield security favicon, and bulk sharing controls.
+- [x] **Live Deployed URLs:** Verified accessible on Render:
+  - Frontend: [https://trustvault-ui-obkw.onrender.com](https://trustvault-ui-obkw.onrender.com)
+  - Backend: [https://trustvault-back.onrender.com](https://trustvault-back.onrender.com)
+- [x] **Five-Minute Demo Video & Write-Up:** Detailed script and submission write-up provided in [`docs/DEMO.md`](file:///d:/projects/trustvault/docs/DEMO.md) and [`docs/WRITEUP.md`](file:///d:/projects/trustvault/docs/WRITEUP.md).
+- [ ] **Public Git Repository:** Repository remains **private** until the submission deadline, as strictly mandated by Snovasys instructions.

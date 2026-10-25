@@ -148,7 +148,7 @@ The following context files and standard instructions were reused across develop
   4. Added audit records for access denials: `action="document_create", outcome="denied"` for viewer upload attempts and `action="admin_audit_logs_read", outcome="denied"` for non-admin audit queries.
   5. Refactored `seed_demo.py` to be idempotent: removed `create_all()`, safely skips existing users without modifying passwords or roles, and supports environment variables for non-interactive execution.
   6. Added bounded pagination (`limit` 1-100, `offset` >= 0) to `GET /documents`, added `document_id` filter to `GET /admin/audit-logs`, updated `.gitignore` for `*.dump`, `*.sql`, `*.tar`, and created comprehensive root `README.md`.
-- **Commit link:** `[Pending manual commit - uncommitted milestone]` (Local changes ready for user review and commit).
+- **Commit link:** [Commit 25ca4cd](https://github.com/Manikanta904/trustvault/commit/25ca4cd4c0e64c01b17b6a4a499380f7690aa8a2)
 - **Verification performed:**
   - `git diff --check`: **Code 0 (zero whitespace or line-ending errors)**.
   - Final regression test run: `.venv\Scripts\pytest -v` (from `backend`): **80 passed, 3 warnings in 14.10s**.
@@ -183,10 +183,35 @@ The following context files and standard instructions were reused across develop
   5. **Sliding-window rate limiter:** Created thread-safe `SlidingWindowRateLimiter` in `app/rate_limiter.py` configured for login (10/min), registration (5/min), user search (30/min), and sensitive document operations (30/min).
   6. **Upload sanitization:** Hardened `save_upload` in `app/file_storage.py` to sanitize path traversal sequences (`../`, null bytes) from uploaded filenames before storing metadata.
   7. **Comprehensive automated tests:** Created `tests/test_phase4_watermark_and_downloads.py` with 18 automated tests verifying owner downloads, shared watermarked downloads, multi-page watermarking, viewer attribution, original file checksum preservation, immediate revocation blocking, rate limiting, and owner search filtering.
-- **Commit link:** `[Pending manual commit - uncommitted milestone]` (Local changes ready for user review and commit).
+- **Commit links:**
+  - Frontend integration: [Commit edfb85b](https://github.com/Manikanta904/trustvault/commit/edfb85bf2d43e5c92843efeb5fc9fae5e7fa9e28)
+  - Security hardening & activity visibility: [Commit 04f73b9](https://github.com/Manikanta904/trustvault/commit/04f73b9e4a36268962eb868d408ebc31b99482f5)
+  - PDF watermarking dependencies: [Commit 8a74445](https://github.com/Manikanta904/trustvault/commit/8a7444517b6863d0382fc0d4972ffc41539bb7f1)
+  - Production login and demo fix: [Commit 3d20bd0](https://github.com/Manikanta904/trustvault/commit/3d20bd08c2a969f62243d4638d97585c57173e65)
 - **Verification performed:**
   - Complete backend test suite: `.venv\Scripts\pytest -q` -> **122 passed, 25 warnings in 30.44s**.
   - Frontend production build: `npm run build` -> **Exit code 0** (built in 553ms).
   - Frontend lint: `npm run lint` -> **Exit code 0** (0 errors, 0 warnings).
   - Database schema check: `alembic current` -> `d7a2c9e4b105 (head)` (database intact, no schema reset, no migrations needed).
 
+---
+
+## Entry 8 — 2026-10-25 — Registration Password Visibility, Password Complexity Validation, and Admin PDF Upload/Sharing
+
+- **AI tools used:** Antigravity IDE; PowerShell terminal, Python venv, Vite/ESLint runtime.
+- **Objective:** Fix registration password visibility controls, strengthen password complexity validation on backend schemas and frontend forms, permit administrators to upload and share PDF documents, and expand automated test coverage.
+- **Prompt / request (summary of the actual work):** Targeted fixes only: restore interactive password visibility toggles on `RegisterPage.tsx`; add password complexity validation rules on `app/schemas.py` and `RegisterPage.tsx` (requiring uppercase, lowercase, digit, and special character); allow administrators to upload PDF documents (`POST /documents/upload`) and share them like document owners; create automated tests for password complexity and admin upload/sharing; ensure full test suite passes.
+- **What was specifically wrong or incomplete (and what was independently checked):**
+  1. **Password visibility toggle UI bug:** In `frontend/src/pages/RegisterPage.tsx`, clicking the eye icon did not toggle password field visibility due to type state mismatch, preventing users from inspecting their input.
+  2. **Registration password complexity gap:** The backend schema only validated minimum length (8 characters). Passwords lacking uppercase letters, digits, or symbols were accepted, allowing weak passwords to pass validation.
+  3. **Administrator PDF upload boundary:** Earlier iterations prohibited administrators from uploading documents (`POST /documents/upload: 403`), conflicting with challenge requirements where platform administrators must be able to upload compliance documents and share them with employees.
+- **Correction / what I did instead:**
+  1. **Password visibility toggle fix:** Restored working `type={showPassword ? 'text' : 'password'}` and `type={showConfirmPassword ? 'text' : 'password'}` toggles with Lucide `Eye` and `EyeOff` icons in [`frontend/src/pages/RegisterPage.tsx`](file:///d:/projects/trustvault/frontend/src/pages/RegisterPage.tsx).
+  2. **Password complexity enforcement:** Added regex validators in [`backend/app/schemas.py`](file:///d:/projects/trustvault/backend/app/schemas.py) enforcing uppercase (`[A-Z]`), lowercase (`[a-z]`), digit (`\d`), and special character (`[^A-Za-z0-9\s]`), mirrored on client validation in `RegisterPage.tsx`.
+  3. **Admin PDF upload & sharing:** Updated authorization check in [`backend/app/routers/documents.py`](file:///d:/projects/trustvault/backend/app/routers/documents.py) to `if user.role not in {"owner", "admin"}:` and updated frontend `DocumentsPage.tsx` and `DashboardPage.tsx` so administrators can upload PDF documents and manage discretionary permissions for their own documents.
+  4. **New automated tests:** Created `tests/test_admin_upload_and_sharing.py` (6 tests) and added 5 new parameterized complexity tests to `tests/test_registration.py` (12 total tests).
+- **Commit link:** [Commit 59d7883](https://github.com/Manikanta904/trustvault/commit/59d7883210bf5666749f39d5112bebee96e72a48)
+- **Verification performed:**
+  - Full backend test suite: `.venv\Scripts\pytest.exe -v`: **135 passed, 25 warnings in 35.15s** (all 135 tests passing across all 12 test files).
+  - Frontend production build: `npm run build` -> **Exit code 0** (built in 2.17s).
+  - Frontend lint: `npm run lint` -> **Exit code 0** (0 errors, 0 warnings).

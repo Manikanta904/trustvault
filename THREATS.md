@@ -1,7 +1,7 @@
 # TrustVault — Threat Model
 
-**Last updated:** 2026-10-21
-**Status:** Backend milestone verified with full automated regression suite (80 passed, 3 warnings in 14.10s); production deployment controls remain documented as accepted operational risks.
+**Last updated:** 2026-10-25
+**Status:** Milestone verified with full automated regression suite (**135 passed**, 25 warnings in 35.15s); production deployment controls remain documented as accepted operational risks.
 
 ---
 
@@ -72,10 +72,10 @@ This document records identified threats, concrete attacker scenarios, expected 
 
 ### T04: Unauthorized Deletion & Permission Management Tampering
 - **Asset & Trust Boundary:** Document lifecycle and access control table; Owner privilege boundary.
-- **Attacker Capability & Attack Scenario:** A viewer, an editor with `edit` permissions, or a platform administrator attempts to delete a document (`DELETE /documents/{id}`) or grant permissions to a third party (`PUT /documents/{id}/permissions/{user_id}`).
-- **Expected Security Invariant:** Only the true document owner (`owner_id == user.id`) can delete the document or grant/revoke permissions. Editors and administrators without ownership cannot manage access or delete files.
-- **Mitigation Implemented in Actual Code:** In `app/routers/documents.py`: `delete_document`, `grant_document_permission`, and `revoke_document_permission` strictly check `document.owner_id == user.id`. If false, audits denial and returns HTTP 404. Non-owners cannot create metadata (`POST /documents` audits denial and returns HTTP 403).
-- **Relevant Automated Test Name(s) & Assertions:** `test_editor_cannot_grant_or_revoke_permissions` (asserts editor `PUT /permissions` returns 404 and original grant remains unchanged), `test_viewer_cannot_create_document_metadata` (returns 403), `test_viewer_metadata_creation_denial_is_audited`.
+- **Attacker Capability & Attack Scenario:** A viewer, an editor with `edit` permissions, or another user attempts to delete a document (`DELETE /documents/{id}`) or grant permissions to a third party (`PUT /documents/{id}/permissions/{user_id}`).
+- **Expected Security Invariant:** Only the true document creator / owner (`owner_id == user.id`) can delete the document or grant/revoke permissions. While administrators can upload and manage their own documents (commit `59d7883`), administrative status alone does NOT grant permission to manage or delete other users' documents.
+- **Mitigation Implemented in Actual Code:** In `app/routers/documents.py`: `delete_document`, `grant_document_permission`, and `revoke_document_permission` strictly check `document.owner_id == user.id`. If false, audits denial and returns HTTP 404. Non-owners (and viewers) cannot create metadata or upload without authorization (`POST /documents/upload` checks `user.role in {"owner", "admin"}`; viewers receive HTTP 403).
+- **Relevant Automated Test Name(s) & Assertions:** `test_editor_cannot_grant_or_revoke_permissions` (asserts editor `PUT /permissions` returns 404 and original grant remains unchanged), `test_viewer_cannot_create_document_metadata` (returns 403), `test_viewer_metadata_creation_denial_is_audited`, `tests/test_admin_upload_and_sharing.py` (verifies admin manages own documents but remains isolated from other owners).
 - **Actual Verification Performed & Result:** Verified non-owners cannot delete or grant permissions; denied attempts are audited.
 - **Residual Risk & Accepted Limitation:** None.
 - **Status:** **Closed**
@@ -122,13 +122,13 @@ This document records identified threats, concrete attacker scenarios, expected 
 
 ### T09: Credential Theft, Inactive Accounts, Token Misuse, & Brute-Force
 - **Asset & Trust Boundary:** User accounts and authentication tokens; Authentication boundary.
-- **Attacker Capability & Attack Scenario:** An attacker uses stolen password hashes, submits expired or forged JWTs, logs in to deactivated employee accounts, or attempts credential stuffing.
-- **Expected Security Invariant:** Passwords must be hashed using state-of-the-art Argon2id. Tokens must have validated expiration and signature. Deactivated users must be blocked immediately from login and active token usage.
-- **Mitigation Implemented in Actual Code:** `app/security.py`: Argon2id password hashing via `pwdlib`. JWT signed with `HS256`, verified with required `sub` and `exp`. `get_current_user` queries database to ensure `user.is_active is True`. Failed logins record `outcome="denied"` in audit logs.
-- **Relevant Automated Test Name(s) & Assertions:** `test_login_and_get_current_user`, `test_invalid_password_is_rejected`, `test_deactivated_user_cannot_use_existing_token`, `test_expired_jwt_is_rejected`, `test_seed_demo_accounts_is_safe_and_idempotent`.
-- **Actual Verification Performed & Result:** Verified 401 on bad password, expired token, and deactivated user; verified failed login is recorded in audit log.
-- **Residual Risk & Accepted Limitation:** Rate-limiting / brute-force throttling on `/auth/login` is not implemented in FastAPI and must be configured at the reverse proxy (Nginx / Cloudflare) in production.
-- **Status:** **Partially Mitigated (Application controls complete; rate-limiting pending deployment)**
+- **Attacker Capability & Attack Scenario:** An attacker uses stolen password hashes, submits expired or forged JWTs, logs in to deactivated employee accounts, attempts credential stuffing, or registers weak passwords.
+- **Expected Security Invariant:** Passwords must be hashed using state-of-the-art Argon2id. Registration must enforce password complexity. Tokens must have validated expiration and signature. Deactivated users must be blocked immediately from login and active token usage. Brute-force attempts must be throttled.
+- **Mitigation Implemented in Actual Code:** `app/security.py`: Argon2id password hashing via `pwdlib`. Registration schemas enforce min 8 chars, uppercase, lowercase, digit, and special character regex rules ([`app/schemas.py`](file:///d:/projects/trustvault/backend/app/schemas.py)). JWT signed with `HS256`, verified with required `sub` and `exp`. `get_current_user` queries database to ensure `user.is_active is True`. Failed logins record `outcome="denied"` in audit logs. `login_rate_limiter` in `app/rate_limiter.py` restricts login attempts to 10/min per IP.
+- **Relevant Automated Test Name(s) & Assertions:** `test_login_and_get_current_user`, `test_invalid_password_is_rejected`, `test_deactivated_user_cannot_use_existing_token`, `test_expired_jwt_is_rejected`, `tests/test_registration.py` (8 parameterized password complexity rejection tests), `test_phase4_watermark_and_downloads.py::test_17_rate_limiter_blocks_excessive_requests`.
+- **Actual Verification Performed & Result:** Verified 401 on bad password, expired token, and deactivated user; verified 422 on weak passwords; verified failed login is recorded in audit log; verified rate limit returns HTTP 429.
+- **Residual Risk & Accepted Limitation:** Rate limiting uses in-memory sliding windows (process-local). Multi-worker clusters require distributed Redis.
+- **Status:** **Closed (for single-node deployment)**
 
 ### T10: Audit Omission, Failure-Path Loss, & Transaction Inconsistency
 - **Asset & Trust Boundary:** Audit log completeness and reliability; Transaction boundary.
@@ -261,6 +261,13 @@ This document records identified threats, concrete attacker scenarios, expected 
   - Owner name/email search filters and repository identity visibility.
   - Rate limiting on authentication, user search, and sensitive document operations.
   - Complete backend test suite: **122 passed, 0 failed in 30.44s** (`.venv\Scripts\pytest -q`).
+  - Frontend production build: **Passed with 0 errors** (`npm run build`).
+  - Frontend lint: **Passed with 0 errors and 0 warnings** (`npm run lint`).
+- **2026-10-25:** Registration Hardening, Admin PDF Sharing, and Final Documentation:
+  - Added password complexity validators (min 8 chars, uppercase, lowercase, digit, special character) in backend schema and frontend registration form.
+  - Interactive password visibility toggles restored on registration page.
+  - Permitted administrator PDF document upload and discretionary sharing (`user.role in {"owner", "admin"}`).
+  - Full backend test suite: **135 passed, 25 warnings in 35.15s** (`.venv\Scripts\pytest.exe -v`).
   - Frontend production build: **Passed with 0 errors** (`npm run build`).
   - Frontend lint: **Passed with 0 errors and 0 warnings** (`npm run lint`).
 
